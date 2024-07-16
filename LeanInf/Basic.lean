@@ -1,31 +1,42 @@
 import Lean
+import Lean.Parser
 import Mathlib
-
+open Lean.Parsec
+open Parser
 
 namespace Array
 
-
--- List comprehension notation
+/-- Array comprehension notation -/
 declare_syntax_cat compClause
-syntax "for " term " in " term : compClause
-syntax "if " term : compClause
 
-syntax "[" term " | " compClause,* "]" : term
+/-- for x in xs -/
+syntax "for " term " in " term : compClause
+
+/-- if x -/
+syntax ifClause := "if " term
+/-- special case for x in xs if pred x-/
+syntax "for " term " in " term " if " term : compClause
+/-- `#[x | for x in xs]` -/
 syntax "#[" term " | " compClause,* "]" : term
 
+/-- Semantics for Array comprehension notation.-/
 macro_rules
-  | `(#[$t | for $x in $xs]) => `(($xs).map (λ $x ↦ $t))
-  | `(#[$t | if $x]) => `(if $x then #[ $t ] else #[])
+  | `(#[$t | for $x in $xs]) => `(($xs).map (fun $x ↦ $t))
+  -- TODO
+  | `(#[$t | for $x in $xs if $p]) => `(Id.run do
+    let mut out := #[]
+    for $x in $xs do
+      if $p then out := out.push $t
+    return out)
   | `(#[$t | $c, $cs,*]) => `(Array.join #[#[$t | $cs,*] | $c ])
-  | `([$t | for $x in $xs]) => `(($xs).map (λ $x ↦ $t))
-  | `([$t | if $x]) => `(if $x then [ $t ] else [])
-  | `([$t | $c, $cs,*]) => `(List.join [[$t | $cs,*] | $c ])
+
+#eval #[x | for x in #[1,2,3] if x > 2]
+#eval #[#[x | for x in #[1,2,3] ] | for x in #[1,2,3]]
 
 private def dropWhile (xs : Array a) (p : a → Bool) : Array a :=
   match xs.findIdx? (fun x => !p x) with
   | none => #[]
   | some i => xs[i:]
-
 
 /-- Compute the sum of all elements in an array. -/
 private def sum [Add a] [Zero a] (arr : Array a) : a :=
@@ -38,20 +49,19 @@ private def prod [Mul a] [One a] (arr : Array a) : a :=
 /-- Cartesian product of 2 arrays. Example of the list comprehension notation's flexibility. -/
 protected def cartProd (xs : Array a) (ys : Array b) : Array (a × b) := #[(x, y) | for x in xs, for y in ys]
 
-/--
-  Filters a list of values based on a list of booleans.
--/
+/-- Filters a list of values based on a list of booleans. -/
 protected def filterBy (xs: Array a) (bs: Array Bool) : Array a := Id.run do
   let mut out := #[]
   for (x, b) in xs.zip bs do
     if b then out := out.push x
   return out
 
-protected def intercalate (separator : String) (xs : Array String) : String := Id.run do
+/-- Inserts the `separator` between the elements of the array. TODO this is List.intersperse-/
+protected def intersperse (separator : String) (array : Array String) : String := Id.run do
   let mut out := ""
-  for i in [:xs.size] do
+  for _h: i in [:array.size] do
     if i > 0 then out := out ++ separator
-    out := out ++ xs[i]!
+    out := out ++ array[i]
   return out
 
 
@@ -64,15 +74,14 @@ protected def intercalate (separator : String) (xs : Array String) : String := I
 
 #eval #[2 | for _ in [1,2]]
 #eval #[x | for (x, _) in [(1,2),(3,4)]]
-#eval #[(x, y) | for x in Array.range 5, for y in Array.range 5, if x + y <= 3]
-#eval #[#[1],#[1,2]].join = #[1, 1, 2]
-#eval #[x| for x in #[1,2,3]] = #[1, 2, 3]
-#eval (#[#[2],#[3]]|>.join) = #[2, 3]
-#eval #[4 | if 1 < 0] = #[]
-#eval #[4 | if 1 < 3] = #[4]
-#eval #[(x, y) | for x in Array.range 5, for y in Array.range 5, if x + y <= 3] = #[(0, 0), (0, 1), (0, 2), (0, 3), (1, 0), (1, 1), (1, 2), (2, 0), (2, 1), (3, 0)]
-
-#eval #[1,2,3].filterBy #[true, false, true] = #[1, 3]
+#eval #[(x, y) | for x in Array.range 5, for y in Array.range 5 if x + y <= 3]
+#eval #[#[1],#[1,2]].join
+#eval #[x| for x in #[1,2,3]]
+#eval (#[#[2],#[3]]|>.join)
+-- #eval #[4 | if 1 < 0] = #[]
+-- #eval #[4 | if 1 < 3] = #[4]
+#eval #[(x, y) | for x in Array.range 5, for y in Array.range 5 if x + y <= 3]
+#eval #[1,2,3].filterBy #[true, false, true]
 #eval #[].dropWhile (fun x => x < 0)
 
 end Array
@@ -124,14 +133,15 @@ def map [BEq K] [Hashable K] [BEq K'] [Hashable K'] (f : K → V → (K' × V'))
 instance [Hashable a] [BEq a] [Repr a] [Repr b]: Repr (Lean.HashMap a b) where
   reprPrec m _ :=
     let entries := m.toArray.map (fun (k, v) => s!"{repr k} ↦ {repr v}")
-    "#{" ++ entries.intercalate ", " ++ "}"
+    "#{" ++ entries.intersperse ", " ++ "}"
 
 instance [ToString a] [ToString b] [BEq a] [Hashable a] : ToString (Lean.HashMap a b) where
   toString m := Id.run do
     let mut out := #[]
     for (k, v) in m do
       out := out.push s!"{k} ↦ {v}"
-    "#{" ++ out.intercalate ", " ++ "}"
+    "#{" ++ out.intersperse ", " ++ "}"
+
 
 
 /-- Maps the values of a `HashMap` using a given function.
@@ -155,14 +165,13 @@ syntax "#{" hashMapItem,* ","? "}" : term
 macro_rules
   | `(#{}) => `(Lean.HashMap.empty) -- 0
   | `(#{$k ↦ $v}) => `(Lean.HashMap.singleton $k $v) -- 1
-  -- `mergeWith` is to ensure left to right order for insertion.
+  -- `mergeWith` instead of `.insert` is to ensure left to right order for insertion.
   | `(#{$k ↦ $v, $ks,*}) => `(#{$k ↦ $v}.mergeWith (fun _ _ v => v) #{$ks,*}) -- n
 
-
-
+#eval (((1:Nat) - (2:Int)) :Int)
 -- Example usages
 #eval (#{}: Lean.HashMap Int Int)
-#eval #{1 ↦ 2 }
+#eval #{1 ↦ 2}
 #eval #{1 ↦ 1, 2 ↦ 2}
 #eval #{}.insert 2 2.0
 #eval toString #{1 ↦ 1, 2 ↦ 2}
@@ -170,28 +179,34 @@ macro_rules
 
 end Lean.HashMap
 
-
-
-
-
+namespace Option
 /-- Unwraps an option, returning the contained value if it is `some`, or a default value if it is `none`. -/
-def _root_.Option.unwrapOr [Inhabited a] (val: Option a) (default : a := Inhabited.default) : a :=
+def unwrapOr [Inhabited a] (val: Option a) (default : a := Inhabited.default) : a :=
   val.getD default
 
 #eval (some 3).unwrapOr
 #eval none.unwrapOr 2
 
+end Option
+
+namespace List
 
 /-- Construct a new empty list. -/
-def _root_.List.empty: List a := []
+def empty: List a := []
 
-notation a "÷" b => Rat.mk' (num := a) (den := b)
+end List
+
+/-- Local notation for creating a rational number. -/
+local notation a "÷" b => Lean.mkRat (num := a) (den := b)
+
+/-- TODO these instances aren't equal? `Lean.Rat` and `ℚ`-/
+instance : Hashable Lean.Rat  where hash r := hash (hash r.num, hash r.den)
+instance : Hashable ℚ where hash r := hash (hash r.num, hash r.den)
 
 
-instance : Hashable Rat where hash (r: ℚ) := hash (r.num, hash r.den)
 
-#synth Ord Float
-#eval (1 ÷ 2) < (3 ÷ 4:Rat)
+-- #eval hash (1 ÷ 4) == hash (Lean.mkRat 5 20)
+-- #eval (1 ÷ 2) < (3 ÷ 4:Lean.Rat)
 #eval (1/2) == (3/4)
 #eval (1/2) = (3/4)
 #eval (1/2) ≥ (3/4)
