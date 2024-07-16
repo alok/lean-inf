@@ -7,10 +7,6 @@ import Lean.Util.Path
 import Lean.Data.Rat
 import LeanInf.Basic
 
-#eval #[s!"a", s!"b", s!"c"].intercalate ", "
-
-
-
 -- TODO rm? too overlapping-/
 instance [Neg a] [Add a] : Sub a where
   sub x y := x + (-y)
@@ -26,12 +22,14 @@ abbrev Term := Coeff × Exponent
 /-- A map from exponents to coefficients -/
 abbrev CoeffMap := Lean.HashMap Exponent Coeff  -- TODO use RbMap instead bc sorted?
 
+/-- A polynomial, represented as a `HashMap` from exponents to coefficients -/
 structure Polynomial' where
   coeffs : CoeffMap := default
 deriving Repr, Inhabited, BEq
 
 namespace Polynomial'
 
+/-- Add two polynomials by adding their coefficients together -/
 instance : Add Polynomial' where
   add p q := Id.run do
     let mut result := p.coeffs
@@ -40,17 +38,19 @@ instance : Add Polynomial' where
       result := result.insert exp (existingCoeff + coeff)
     return ⟨result⟩
 
+/-- Negates a polynomial by negating its coefficients -/
 instance : Neg Polynomial' where neg p := ⟨p.coeffs.mapValues (-·)⟩
-
 
 #eval Polynomial'.mk #{0 ↦ 1, 1 ↦ 2} + Polynomial'.mk #{-1 ↦ 1, 1 ↦ 2}
 
+/-- The empty polynomial, that is, the constant `0`. -/
 def empty : Polynomial' := ⟨.empty⟩
 
--- TODO: bad idea? Any real number can be represented as a polynomial with a single term. By the way, this also uses that 0^0 is 1 (since the constant term is x^0)
+/--  TODO: bad idea? Any real number can be represented as a polynomial with a single term. By the way, this also uses that 0^0 is 1 (since the constant term is x^0) -/
 instance : Coe Coeff Polynomial' where
   coe c := {coeffs := #{0 ↦ c}}
 
+/-- Create a `Polynomial'` from a natural number -/
 instance : OfNat Polynomial' n where ofNat := match n with
   | 0 => .empty
   | 1 => ⟨#{0 ↦ 1}⟩
@@ -67,7 +67,7 @@ instance : OfScientific Polynomial' where
 
 #eval Polynomial'.empty == (0 : Polynomial')
 #eval Polynomial'.empty
-#eval (0 : Polynomial')
+#eval (0 )
 
 /-- Create a `Polynomial'` from a list of tuples -/
 def ofList (l : List Term) : Polynomial' := Id.run do
@@ -77,15 +77,59 @@ def ofList (l : List Term) : Polynomial' := Id.run do
     result := result.insert exp (existingCoeff + coeff)
   return ⟨result⟩
 
+namespace Format
+
+private def digitToSuperscript (c : Char) : Char :=
+  match c with
+  | '0' => '⁰' | '1' => '¹' | '2' => '²' | '3' => '³' | '4' => '⁴'
+  | '5' => '⁵' | '6' => '⁶' | '7' => '⁷' | '8' => '⁸' | '9' => '⁹'
+  | _ => c
+
+/-- Converts digits 0-9 to their superscript Unicode equivalents, leaving other characters unchanged. Handles negative signs properly. -/
+def toSuperscript (s : String) : String :=
+  let rec go (acc : String) (chars : List Char) : String :=
+    match chars with
+    | [] => acc
+    | '-' :: rest => go (acc ++ "⁻") rest
+    | c :: rest => go (acc.push (digitToSuperscript c)) rest
+  go "" s.data
+
+private def sortTerms (terms : Array (Exponent × Coeff)) : Array (Exponent × Coeff) :=
+  terms.qsort (fun (a, _) (b, _) =>
+    if a < 0 && b < 0 then a > b
+    else if a < 0 then true
+    else if b < 0 then false
+    else a < b)
 
 
+
+
+instance : ToString Polynomial' where
+  toString p := Id.run do
+    let terms := sortTerms (p.coeffs.toArray)
+      |>.filter (fun (_, coeff) => coeff != 0)  -- Filter out zero terms
+      |>.map fun (exp, coeff) =>
+        match exp with
+        | 0 => s!"{coeff}"
+        | 1 => s!"{coeff}ε"
+        | -1 => s!"{coeff}H"
+        | n => Id.run do
+          let unit := if n > 0 then "ε" else "H"
+          let exp := Format.toSuperscript (toString (if exp > 0 then exp else -exp))
+          s!"{coeff}{unit}{exp}"
+    let nonZeroTerms := terms.filter (· ≠ "0")  -- Remove "0" terms
+    return if nonZeroTerms.isEmpty then "0" else nonZeroTerms.intersperse " + "
+
+#eval Format.toSuperscript s!"{-1}"
+
+end Format
 
 namespace Notation
 
 /-- Syntax category for infinitesimal or hyperreal units -/
 declare_syntax_cat infUnit
 
-/-- Syntax for representing ε (epsilon) or H as infinitesimal or hyperreal units -/
+/-- Syntax for representing ε (epsilon) or H as infinitesimal or hyperfinite units -/
 syntax "ε" : infUnit
 syntax "H" : infUnit
 
@@ -144,72 +188,27 @@ macro_rules
   | `(p[$x:polyItem, $xs,*]) => `(p[$x] + p[$xs,*])
   | `(p[$coeff:term]) => `(Polynomial'.mk #{0 ↦ $coeff})
 
-#eval p[]
-#eval p[ε]
-#eval p[-ε]
-#eval p[H]
-#eval p[-H]
-#eval p[-3H^3]
-#eval p[(-ε)^3]
-#eval p[1ε]
-#eval p[1ε, 3H]
+#eval toString <| p[]
+#eval toString <| p[ε]
+#eval toString <| p[-ε]
+#eval toString <| p[H]
+#eval toString <| p[-H]
+#eval toString <| p[-3H^3]
+#eval toString <| p[-ε^3]
+#eval toString <| p[1ε]
+#eval toString <| p[1ε, 3H]
 #eval Id.run do
   let x := 2
-  (p[x ε], p[x ε^2])
+  (p[x ε], p[4*x ε^2])
 #eval  p[1, 2 ε, 3ε^2]
 
 end Notation
 end Polynomial'
 
-
-namespace Format
-
-private def digitToSuperscript (c : Char) : Char :=
-  match c with
-  | '0' => '⁰' | '1' => '¹' | '2' => '²' | '3' => '³' | '4' => '⁴'
-  | '5' => '⁵' | '6' => '⁶' | '7' => '⁷' | '8' => '⁸' | '9' => '⁹'
-  | _ => c
-
-/-- Converts digits 0-9 to their superscript Unicode equivalents, leaving other characters unchanged. Handles negative signs properly. -/
-def toSuperscript (s : String) : String :=
-  let rec go (acc : String) (chars : List Char) : String :=
-    match chars with
-    | [] => acc
-    | '-' :: rest => go (acc ++ "⁻") rest
-    | c :: rest => go (acc.push (digitToSuperscript c)) rest
-  go "" s.data
-
-private def sortTerms (terms : Array (Exponent × Coeff)) : Array (Exponent × Coeff) :=
-  terms.qsort (fun (a, _) (b, _) =>
-    if a < 0 && b < 0 then a > b
-    else if a < 0 then true
-    else if b < 0 then false
-    else a < b)
-
-instance : ToString Polynomial' where
-  toString p := Id.run do
-    let terms := sortTerms (p.coeffs.toArray)
-      |>.filter (fun (_, coeff) => coeff != 0)  -- Filter out zero terms
-      |>.map fun (exp, coeff) =>
-        match exp with
-        | 0 => s!"{coeff}"
-        | 1 => s!"{coeff}ε"
-        | -1 => s!"{coeff}H"
-        | n => Id.run do
-          let unit := if n > 0 then "ε" else "H"
-          let exp := Format.toSuperscript (toString (if exp > 0 then exp else -exp))
-          s!"{coeff}{unit}{exp}"
-    let nonZeroTerms := terms.filter (· ≠ "0")  -- Remove "0" terms
-    return if nonZeroTerms.isEmpty then "0" else nonZeroTerms.intercalate " + "
-
-end Format
-
 #eval toString <| p[ 2ε, 3ε^2, 0 ε] + p[ 2ε, 3ε^2,4H^2]
 #eval p[0 ε].coeffs.toArray.filter (fun (_, coeff) => coeff != 0)
 
 def Polynomial'.norm (p : Polynomial') : Polynomial' := ⟨p.coeffs.mapValues (fun coeff => if coeff ==  0 then 0 else 1)⟩
-
-
 
 instance : Mul Polynomial' where
   mul p q := Id.run do
@@ -222,7 +221,6 @@ instance : Mul Polynomial' where
         result := result + term
     return result
 
-#eval Format.toSuperscript s!"{-1}"
 #eval toString (Polynomial'.mk #{2 ↦ 1, -1 ↦ 3, 0 ↦ 1})  -- Should output
 #eval toString (Polynomial'.mk #{1 ↦ 1, 2 ↦ 4, 2 ↦ 5, 3 ↦ 1, 4 ↦ 1, 5 ↦ 1, 6 ↦ 1, 7 ↦ 1, 8 ↦ 1, 9 ↦ 1, 0 ↦ 1})  -- Should output: "x + x² + x³ + x⁴ + x⁵ + x⁶ + x⁷ + x⁸ + x⁹ + ¹"
 
@@ -245,7 +243,7 @@ instance : Repr LeviCivitaNum where
       if x.infinitesimal != .empty then toString x.infinitesimal else ""
     ]
     let nonEmptyParts := parts.filter (fun a => !a.isEmpty && a != "0")
-    return if nonEmptyParts.isEmpty then "0" else nonEmptyParts.intercalate " + "
+    return if nonEmptyParts.isEmpty then "0" else nonEmptyParts.intersperse " + "
 
 -- TODO this should be doable with default deriving handler for `Add`.
 instance : Add LeviCivitaNum where
@@ -259,6 +257,12 @@ instance : OfNat LeviCivitaNum n where
     | 0 =>  {std := 0}
     | 1 => {std := 1}
     | _ => {std := n.toFloat}
+
+instance : OfScientific LeviCivitaNum where
+  ofScientific mantissa exponentSign decimalExponent := {std := .ofScientific mantissa exponentSign decimalExponent}
+
+
+
 
 def LeviCivitaNum.zero : LeviCivitaNum := 0
 instance : Zero LeviCivitaNum where zero := 0
@@ -346,11 +350,13 @@ private def Polynomial'.partition (poly: Polynomial') : LeviCivitaNum := Id.run 
       infinitesimal := infinitesimal + p[coeff ε^exp]
   return {std := std, infinite := infinite, infinitesimal := infinitesimal}
 
+
+open Polynomial'.Format in
 instance : ToString LeviCivitaNum where
   toString x := Id.run do
     let mut terms := #[]
     -- Add infinite terms
-    let infiniteTerms := Format.sortTerms (x.infinite.coeffs.toArray)
+    let infiniteTerms := sortTerms (x.infinite.coeffs.toArray)
       |>.map fun (exp, coeff) =>
         if coeff == 0 then
           ""
@@ -361,14 +367,14 @@ instance : ToString LeviCivitaNum where
         | 1 => s!"{coeff}H⁻¹"
         | _ =>
           let unit := "H"
-          let exp := Format.toSuperscript (toString (-exp))
+          let exp := toSuperscript (toString (-exp))
           s!"{coeff}{unit}{exp}"
     terms := terms.append infiniteTerms
     -- Add standard part if non-zero
     if x.std != 0 then
       terms := terms.push s!"{x.std}"
     -- Add infinitesimal terms
-    let infinitesimalTerms := Format.sortTerms (x.infinitesimal.coeffs.toArray)
+    let infinitesimalTerms := sortTerms (x.infinitesimal.coeffs.toArray)
       |>.map fun (exp, coeff) =>
         if coeff == 0 then
           ""
@@ -378,12 +384,12 @@ instance : ToString LeviCivitaNum where
         | 1 => s!"{coeff}ε"
         | _ =>
           let unit := "ε"
-          let exp := Format.toSuperscript (toString exp)
+          let exp := toSuperscript (toString exp)
           s!"{coeff}{unit}{exp}"
     terms := terms.append infinitesimalTerms
     let nonEmptyParts := terms.filter (· != "")
     -- Combine all terms
-    let result := nonEmptyParts.intercalate " + "
+    let result := nonEmptyParts.intersperse " + "
     return if result.isEmpty then "0" else result
 
 -- parenthesization is fucked
@@ -408,12 +414,49 @@ instance : Mul LeviCivitaNum where
 #eval 2.0>3.4
 #synth LE Coeff
 
-instance : LT LeviCivitaNum where
-  lt x y :=
-    let diff := x - y
-    diff.std < 0 || (diff.std == 0 && diff.infinite.coeffs.any (fun  coeff exp => coeff < 0)) || (diff.std == 0 && diff.infinite.coeffs.isEmpty && diff.infinitesimal.coeffs.any (fun coeff exp => coeff < 0))
 
+
+
+/-- check if the number is a standard number. TODO is 0 a standard number?-/
+def LeviCivitaNum.isStd (x: LeviCivitaNum) : Bool := x.infinite.coeffs.isEmpty && x.infinitesimal.coeffs.isEmpty
+
+/-- compute the signum of a Levi-Civita number-/
+def LeviCivitaNum.signum (x: LeviCivitaNum) : LeviCivitaNum :=
+  let allTerms := x.infinite.coeffs.toArray ++ #[(0, x.std)] ++ x.infinitesimal.coeffs.toArray
+  -- we sort by < since currently all exponent keys are negative for unlimited and positive for infinitesimals, which is a bad convention because opposite of scientific notation.
+  let sortedTerms := allTerms.qsort (fun (exp₁, _) (exp₂, _) => match Float.decLt exp₁ exp₂ with | isTrue _ => 1 | isFalse _ => -1)
+  match sortedTerms.find? (fun (_, coeff) => coeff != 0) with
+  | some (_, coeff) => if _h:coeff > 0 then 1 else -1
+  | none => 0
+
+#eval lc[1, H, -H^2].signum  -- Should be -1
+#eval lc[-ε,H,ε,H,-H^2, H^5].signum  -- Should be -1
+#eval lc[ε].signum  -- Should be 1
+#eval lc[-H,ε].signum  -- Should be -1
+#eval lc[-ε,H].signum  -- Should be 1
+#eval lc[-2,ε,H].signum  -- Should be 1
+
+-- instance floatDecLt (a b : Float) : Decidable (a < b) := Float.decLt a b
+
+instance : LT LeviCivitaNum where
+  lt x y := (x - y).signum = -1
+
+
+-- #synth Decidable
+--     (LeviCivitaNum.ε <
+--       { std := 0, infinite := Polynomial'.empty, infinitesimal := { coeffs := Lean.HashMap.singleton 1 2 } })
+
+
+
+
+#synth Decidable ((fun a b => a<b) 1. 1.1)
 #eval (1:LeviCivitaNum) < (2:LeviCivitaNum)
+#eval 1<2
+#eval lc[1] < lc[2]
+#eval lc[ε] < lc[2ε]
+#eval lc[H] < lc[2H]
+#eval lc[-H] < lc[H]
+#reduce Decidable (1>2)
 
 def Polynomial'.mapCoeffs (f : Coeff → Coeff) (p : Polynomial') : Polynomial' :=
   ⟨p.coeffs.mapValues f⟩
@@ -463,8 +506,6 @@ def testCases : List (String × Option LeviCivitaNum) := [
   ("[sqrt(d+d^2)]^2", some lc[ε^(1/2) , ε^2])
 ]
 
+/--entry point.-/
 def main : IO Unit := do
-  IO.println <| (System.FilePath.mk ".././")
-
-#eval main
-#eval main
+  IO.println <| System.FilePath.mk ".././"
