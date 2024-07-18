@@ -19,13 +19,19 @@ def _root_.Array.maxBy? [Ord b][Max b][LT b][DecidableRel (@LT.lt b _)] (xs : Ar
   return max
 
 -- TODO rm? too overlapping-/
-instance [Neg a] [Add a] : Sub a where
+local instance [Neg a] [Add a] : Sub a where
   sub x y := x + (-y)
+local instance [Inv a] [Mul a]: Div a where
+  div x y := x * y⁻¹
 
-@[inherit_doc Float]
-abbrev Coeff := Float
 @[inherit_doc Rat]
 abbrev Exponent := Rat
+
+@[inherit_doc Rat]
+abbrev Coeff := Rat
+
+-- @[inherit_doc Float]
+-- abbrev Coeff := Float
 
 /-- A term in a polynomial. Given as `(Coeff, Exponent)`. -/
 abbrev Term := Coeff × Exponent
@@ -46,6 +52,8 @@ instance : BEq Polynomial' where
     p' == q'
 
 
+#eval (1:Nat) - (2:Nat)
+#eval Float.sqrt (2/3:Float)
 namespace Polynomial'
 
 /-- Add two polynomials by adding their coefficients together -/
@@ -68,13 +76,13 @@ def empty : Polynomial' := ⟨.empty⟩
 /--  TODO: bad idea? Any real number can be represented as a polynomial with a single term. By the way, this also uses that 0^0 is 1 (since the constant term is x^0) -/
 instance : Coe Coeff Polynomial' where
   coe c := ⟨#{0 ↦ c}⟩
-
+#eval ((2:Coeff) : Polynomial')+((2:Coeff) : Polynomial')
 /-- Create a `Polynomial'` from a natural 'iiiinttcsdgh'ber -/
 instance : OfNat Polynomial' n where ofNat := match n with
   | 0 => .empty
   | 1 => ⟨#{0 ↦ 1}⟩
-  | _ => ⟨#{0 ↦ n.toFloat}⟩
-
+  | _ => ⟨#{0 ↦ (n:Coeff)}⟩
+#eval ((2 : Polynomial')+(2 : Polynomial'))
 /-- For decimal and scientific numbers (e.g., `1.23`, `3.12e10`).
 
     Examples:
@@ -83,7 +91,7 @@ instance : OfNat Polynomial' n where ofNat := match n with
 -/
 instance : OfScientific Polynomial' where
   ofScientific mantissa exponentSign decimalExponent := ⟨#{0 ↦ .ofScientific mantissa exponentSign decimalExponent}⟩
-
+#eval (0.2341423190:Rat)
 #eval Polynomial'.empty == (⟨#{0.0 ↦ 0}⟩ : Polynomial')
 #eval Polynomial'.empty
 #eval (1 : Polynomial') == (⟨#{0 ↦ 1}⟩ : Polynomial')
@@ -129,8 +137,8 @@ instance : ToString Polynomial' where
         | 0 => s!"{coeff}"
         | 1 => s!"{coeff}H"
         | -1 => s!"{coeff}ε"
-        | n =>
-            let unit := if n > 0 then "H" else "ε"
+        | exp =>
+            let unit := if exp > 0 then "H" else "ε"
             let exp := Format.toSuperscript (toString (if exp > 0 then exp else -exp))
             s!"{coeff}{unit}{exp}"
     let nonZeroTerms := terms.filter (· ≠ "0")  -- Remove "0" terms
@@ -224,8 +232,6 @@ end Polynomial'
 #eval toString <| p[ 2ε, 3ε^2, 0 ε] + p[ 2ε, 3ε^2,4H^2]
 #eval p[0 ε].coeffs.toArray.filter (fun (_, coeff) => coeff != 0)
 
-def Polynomial'.norm (p : Polynomial') : Polynomial' := ⟨p.coeffs.mapValues (fun coeff => if coeff ==  0 then 0 else 1)⟩
-
 instance : Mul Polynomial' where
   mul p q := Id.run do
     let mut result := Polynomial'.empty
@@ -304,7 +310,7 @@ instance : OfNat LeviCivitaNum n where
   ofNat := match n with
     | 0 => zero
     | 1  => one
-    | _ => {std := n.toFloat, _pf_infinitesimal_keys_negative := by rfl, _pf_infinite_keys_positive := by rfl}
+    | _ => {std := (n:Coeff), _pf_infinitesimal_keys_negative := by rfl, _pf_infinite_keys_positive := by rfl}
 
 instance : OfScientific LeviCivitaNum where
   ofScientific mantissa exponentSign decimalExponent := {
@@ -427,6 +433,8 @@ instance : Mul LeviCivitaNum where
     let y' := p[y.std] + y.infinite + y.infinitesimal
     (x' * y').partition
 
+
+
 /-- Power of a Levi-Civita number. -/
 instance: HPow LeviCivitaNum ℕ LeviCivitaNum where
   hPow x n := Id.run do
@@ -445,8 +453,6 @@ instance: HPow LeviCivitaNum ℕ LeviCivitaNum where
 #eval (lc[1 , ε] ^ 2 : LeviCivitaNum)  -- Should be 1 + 2ε + ε^2
 #eval (lc[2 , H] ^ 3 : LeviCivitaNum)  -- Should be 8 + 12H + 6H^2 + H^3
 
-
-
 #eval  lc[ε]*lc[H,ε,H^2]
 #eval lc[-ε, ε, H] * lc[-ε,  ε, H]
 #eval lc[-ε^2,2ε^3] * lc[ε, 3H]
@@ -455,9 +461,6 @@ instance: HPow LeviCivitaNum ℕ LeviCivitaNum where
 
 #eval 2.0>3.4
 #synth LE Coeff
-
-
-
 
 /-- check if the number is a standard number. TODO is 0 a standard number?-/
 def isStd (x: LeviCivitaNum) : Bool := x.infinite.coeffs.isEmpty && x.infinitesimal.coeffs.isEmpty
@@ -475,6 +478,10 @@ def signum (x: LeviCivitaNum) : Int :=
   | some (_, coeff) => if coeff > 0 then 1 else -1
   | none => 0
 
+
+
+
+
 #eval lc[1, H, -H^2].signum  -- Should be -1
 #eval lc[-ε,H,ε,H,-H^2, H^5].signum  -- Should be -1
 #eval lc[ε].signum  -- Should be 1
@@ -484,37 +491,58 @@ def signum (x: LeviCivitaNum) : Int :=
 
 /-- TODO this doesn't work and fails to synthesize Decidable (a :LCN) -> Decidable (b :LCN) -> Prop, which is not what we want.
 We want (a < b) to be decidable. -/
-instance : LT LeviCivitaNum where
-  lt x y := (x - y).signum == (-1:Int)
+instance : LE LeviCivitaNum where
+  le x y := (x - y).signum == (-1:Int)
+
+instance LT : LT LeviCivitaNum where
+  lt x y  := (x-y).signum = -1
+
+instance : DecidableRel (@LT.lt LeviCivitaNum _) :=
+  fun x y =>
+    if h : ((x - y).signum = -1) then
+      isTrue h
+    else
+      isFalse (decide (h))
+
+-- class inductive Decidable (p : Prop) where
+--   /-- Prove that `p` is decidable by supplying a proof of `¬p` -/
+--   | isFalse (h : Not p) : Decidable p
+--   /-- Prove that `p` is decidable by supplying a proof of `p` -/
+--   | isTrue (h : p) : Decidable p
+
+#eval abs (1:Coeff)
 
 #eval ((1:LeviCivitaNum) - (2:LeviCivitaNum)).signum
-#eval 1<2
+#synth (@LT.lt Float Float) (1.0)<(3.2)
 #eval lc[1] < lc[2]
 #eval lc[ε] < lc[2ε]
 #eval lc[H] < lc[2H]
-#eval lc[-H] < lc[H]
+#eval lc[-H] < lc[-H]
 
 #eval (lc[ε] - lc[2ε]).signum
 #eval (lc[H] - lc[2H]).signum
 #eval (lc[-H] - lc[H]).signum
 
+
 def abs (x : LeviCivitaNum) : LeviCivitaNum :=
+  let _abs : Coeff → Coeff := fun coeff => if coeff < 0 then -coeff else coeff
   {
-    std := Float.abs x.std
-    infinitesimal := ⟨x.infinitesimal.coeffs.map (fun exp coeff => (exp, Float.abs coeff))⟩
-    infinite := ⟨x.infinite.coeffs.map (fun exp coeff => (exp, Float.abs coeff))⟩
+    std := if x.std < 0 then -x.std else x.std
+    infinitesimal := ⟨x.infinitesimal.coeffs.map (fun exp coeff => (exp, _abs coeff))⟩
+    infinite := ⟨x.infinite.coeffs.map (fun exp coeff => (exp, _abs coeff))⟩
   }
 
 #eval abs lc[-ε]
 #eval abs lc[-H,2,-4]
 
-def expand (x : LeviCivitaNum) (t : List Coeff) : LeviCivitaNum := Id.run do
-  let mut s := zero
-  let mut pow := one
-  for coeff in t do
-    let term := (↑coeff : LeviCivitaNum) * pow
+
+def expand (x : LeviCivitaNum) (n : Nat) : LeviCivitaNum := Id.run do
+  let mut (s, pow, sign) := (0, 1, 1)
+  for _ in [0:n] do
+    let term := sign * pow
     s := s + term
     pow := pow * x
+    sign := -sign
   return s
 
 /-- Truncate a Levi-Civita number to a certain grade. Negative will clip infinitesimals, positive will clip unlimited terms too.-/
@@ -526,8 +554,8 @@ def truncate (x: LeviCivitaNum) (n: Int) : LeviCivitaNum :=
   }
 
 
-def Term.abs (x: (Exponent × Coeff)) : (Exponent × Coeff) := (x.1, Float.abs x.2)
-#eval  ((1,2):(Exponent × Coeff))
+def Term.abs (x: (Exponent × Coeff)) : (Exponent × Coeff) := (x.1, if x.2 < 0 then -x.2 else x.2)
+
 instance : LT (Exponent × Coeff) where
   lt x y := match x, y with
   | (exp₁, coeff₁), (exp₂, coeff₂) => exp₁ < exp₂ || (exp₁ == exp₂ && coeff₁ < coeff₂)
@@ -547,10 +575,50 @@ def largestTerm (x: LeviCivitaNum) : (Exponent × Coeff) := Id.run do
 
 
 
+def isPure (x: LeviCivitaNum) : Bool :=
+  match x.std, x.infinite.coeffs.toArray, x.infinitesimal.coeffs.toArray with
+  | _, #[], #[] => true  -- Only standard part
+  | 0, #[_], #[] => true  -- Only one infinite term
+  | 0, #[], #[_] => true  -- Only one infinitesimal term
+  | _, _, _ => false  -- All other cases
+
+
+#eval lc[H,-H].isPure
+
+def purePart (x: LeviCivitaNum) (h : isPure x = true) : LeviCivitaNum := match x.std, x.infinite.coeffs.toArray, x.infinitesimal.coeffs.toArray with
+  | _, #[], #[] => x
+  | 0, #[_], #[] => x
+  | 0, #[], #[_] => x
+  | _, _, _ => lc[0]
+
+
+
+def isPureInfinite (x: LeviCivitaNum) : Bool := x.std == 0 && !x.infinite.coeffs.toArray.isEmpty && x.infinitesimal.coeffs.toArray.isEmpty
+def isPureInfinitesimal (x: LeviCivitaNum) : Bool := x.std == 0 && !x.infinitesimal.coeffs.toArray.isEmpty && x.infinite.coeffs.toArray.isEmpty
+#eval lc[ε].isPureInfinitesimal
 instance : Inv LeviCivitaNum where
   inv x := Id.run do
-    if x == 0 then -- absolute infinity in this case
-      return lc[(1:Float)/(0:Float)]
+    if _h: isPure x then
+      if isPureInfinitesimal x then
+        let (exp,coeff) := x.infinitesimal.coeffs.toArray.getD 0 default
+        return lc[ (Inv.inv coeff)  ε^exp  ]
+      else if isPureInfinite x then
+        let (exp,coeff) := x.infinite.coeffs.toArray.getD 0 default
+        dbg_trace s!"x: {x}, exp: {exp}, coeff: {coeff}"
+        return lc[(Inv.inv coeff)  H^(-exp)]
+      else
+        return lc[(Inv.inv x.std)]
+
+    -- pure infinite
+    --pure infinitesimal
+    -- pure
+    if x.infinite.coeffs.isEmpty  && x.infinitesimal.coeffs.isEmpty then -- pure std
+      return lc[(1:Coeff)/(0:Coeff)]
+    -- pure infinitesimal
+    else if x.infinitesimal.coeffs.isEmpty then
+      return lc[(0:Coeff)/(1:Coeff)]
+    else if x == 0 then -- absolute infinity in this case
+      return lc[(1:Coeff)/(0:Coeff)]
     else if x.isStd then -- If x is standard, just invert it
       return { std := 1 / x.std, _pf_infinitesimal_keys_negative := by rfl, _pf_infinite_keys_positive := by rfl }
     else
@@ -566,12 +634,16 @@ instance : Inv LeviCivitaNum where
       let poly' := poly.partition
       dbg_trace poly'
       -- Taylor series for 1/(1+eps) (1 - ε + ε²  - ε³ ..)
-      let invFactored := LeviCivitaNum.expand poly' [1, -1, 1, -1, 1, -1, 1, -1]
+      let invFactored := LeviCivitaNum.expand poly' [1, -1, 1, -1, 1, -1, 1, -1].length
 
       -- Multiply by 1/largestCoeff and adjust the exponent
       return invFactored
 
-#eval lc[Float.nan]
+#eval Inv.inv lc[]
+
+#eval lc[nan]
+#eval Inv.inv lc[H]
+#eval Inv.inv lc[ε]
 instance: Div LeviCivitaNum where
   div x y := x * y⁻¹
 
@@ -604,3 +676,4 @@ end LeviCivitaNum
 /--entry point.-/
 def main : IO Unit := do
   IO.println <| System.FilePath.mk ".././"
+#eval  (p[1ε, 2ε^2, 3ε^3])
