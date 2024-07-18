@@ -109,6 +109,7 @@ It returns `true` if any pair satisfies the predicate, and `false` otherwise.
 def _root_.Lean.HashMap.any [Hashable K][BEq K][BEq V] (xs: Lean.HashMap K V) (f: K → V → Bool) : Bool :=
   xs.fold (fun acc k v => acc || f k v) false
 
+-- TODO this may break?
 instance [Hashable K][BEq K][BEq V] : BEq (Lean.HashMap K V) where
   beq xs ys :=
     xs.size == ys.size && xs.all (fun k v => ys.findD k v == v)
@@ -142,7 +143,18 @@ instance [ToString a] [ToString b] [BEq a] [Hashable a] : ToString (Lean.HashMap
       out := out.push s!"{k} ↦ {v}"
     "#{" ++ out.intersperse ", " ++ "}"
 
+/-- Filters a `HashMap` based on a given predicate.
 
+This function applies the given predicate `f` to each key-value pair in the `HashMap`.
+It returns a new `HashMap` with the key-value pairs that satisfy the predicate.
+-/
+def filter [BEq a] [Hashable a] (xs: Lean.HashMap a b) (f: a → b → Bool) : Lean.HashMap a b :=
+  Id.run do
+    let mut result := .empty
+    for (k, v) in xs do
+      if f k v then
+        result := result.insert k v
+    return result
 
 /-- Maps the values of a `HashMap` using a given function.
 
