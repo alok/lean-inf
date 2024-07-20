@@ -31,7 +31,7 @@ macro_rules
   | `(#[$t | $c, $cs,*]) => `(Array.join #[#[$t | $cs,*] | $c ])
 
 #eval #[x | for x in #[1,2,3] if x > 2]
-#eval #[#[x | for x in #[1,2,3] ] | for x in #[1,2,3]]
+#eval #[#[x | for x in #[1,2,3] ] | for _ in #[1,2,3]]
 
 private def dropWhile (xs : Array a) (p : a → Bool) : Array a :=
   match xs.findIdx? (fun x => !p x) with
