@@ -1,5 +1,6 @@
 import Lean
 import Lean.Parser
+import Batteries
 import Mathlib
 open Lean.Parsec
 open Parser
@@ -96,7 +97,7 @@ This function applies the given predicate `f` to each key-value pair in the `Has
 It returns `true` if all pairs satisfy the predicate, and `false` otherwise.
 -/
 def _root_.Lean.HashMap.all [Hashable K][BEq K][BEq V] (xs: Lean.HashMap K V) (f: K → V → Bool) : Bool :=
-  xs.fold (fun acc k v => acc && f k v) true
+  xs.fold (fun acc k v => acc && f k v) (init := true)
 
 /--
 Checks if any key-value pairs in a `HashMap` satisfy a given predicate.
@@ -107,13 +108,12 @@ It returns `true` if any pair satisfies the predicate, and `false` otherwise.
 -- TODO does this short circuit? make test case
 -/
 def _root_.Lean.HashMap.any [Hashable K][BEq K][BEq V] (xs: Lean.HashMap K V) (f: K → V → Bool) : Bool :=
-  xs.fold (fun acc k v => acc || f k v) false
+  xs.fold (fun acc k v => acc || f k v) (init := false)
 
 -- TODO this may break?
-instance [Hashable K][BEq K][BEq V] : BEq (Lean.HashMap K V) where
+instance [Hashable K][BEq K] [BEq V] : BEq (Lean.HashMap K V) where
   beq xs ys :=
     xs.size == ys.size && xs.all (fun k v => ys.findD k v == v)
-
 
 /-- Maps both keys and values of a `HashMap` using a given function.
 
@@ -130,11 +130,12 @@ def map [BEq K] [Hashable K] [BEq K'] [Hashable K'] (f : K → V → (K' × V'))
     result := result.insert k' v'
   return result
 
-/--Display as #{ a ↦ b, c ↦ d }-/
+/-- Display as #{ a ↦ b, c ↦ d }-/
 instance [Hashable a] [BEq a] [Repr a] [Repr b]: Repr (Lean.HashMap a b) where
   reprPrec m _ :=
     let entries := m.toArray.map (fun (k, v) => s!"{repr k} ↦ {repr v}")
     "#{" ++ entries.intersperse ", " ++ "}"
+
 
 instance [ToString a] [ToString b] [BEq a] [Hashable a] : ToString (Lean.HashMap a b) where
   toString m := Id.run do
@@ -178,11 +179,10 @@ macro_rules
   | `(#{}) => `(Lean.HashMap.empty) -- 0
   | `(#{$k ↦ $v}) => `(Lean.HashMap.singleton $k $v) -- 1
   -- `mergeWith` instead of `.insert` is to ensure left to right order for insertion.
-  | `(#{$k ↦ $v, $ks,*}) => `(#{$k ↦ $v}.mergeWith (fun _ _ v => v) #{$ks,*}) -- n
+  | `(#{$k ↦ $v, $ks,*}) => `(#{$k ↦ $v}.mergeWith (f := fun _ _v₁ v₂ => v₂) (other := #{$ks,*} )) -- n
 
 #eval (((1:Nat) - (2:Int)) :Int)
 -- Example usages
-#eval (#{}: Lean.HashMap Int Int)
 #eval #{1 ↦ 2}
 #eval #{1 ↦ 1, 2 ↦ 2}
 #eval #{}.insert 2 2.0
@@ -223,3 +223,4 @@ instance : Hashable ℚ where hash r := hash (hash r.num, hash r.den)
 #eval (1/2) = (3/4)
 #eval (1/2) ≥ (3/4)
 #eval (1/2) ≤ (3/4)
+#eval toString #{1 ↦ 1, 2 ↦ 2}
