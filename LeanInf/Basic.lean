@@ -90,13 +90,17 @@ end Array
 
 namespace Lean.HashMap
 
+
+variable {K V K' V' : Type}
+variable [Hashable K] [BEq K] [Hashable K'] [BEq K']
+
 /--
 Checks if all key-value pairs in a `HashMap` satisfy a given predicate.
 
 This function applies the given predicate `f` to each key-value pair in the `HashMap`.
 It returns `true` if all pairs satisfy the predicate, and `false` otherwise.
 -/
-def _root_.Lean.HashMap.all [Hashable K][BEq K][BEq V] (xs: Lean.HashMap K V) (f: K → V → Bool) : Bool :=
+def all (xs: Lean.HashMap K V) (f: K → V → Bool) : Bool :=
   xs.fold (fun acc k v => acc && f k v) (init := true)
 
 /--
@@ -107,11 +111,11 @@ It returns `true` if any pair satisfies the predicate, and `false` otherwise.
 
 -- TODO does this short circuit? make test case
 -/
-def _root_.Lean.HashMap.any [Hashable K][BEq K][BEq V] (xs: Lean.HashMap K V) (f: K → V → Bool) : Bool :=
+def any (xs: Lean.HashMap K V) (f: K → V → Bool) : Bool :=
   xs.fold (fun acc k v => acc || f k v) (init := false)
 
 -- TODO this may break?
-instance [Hashable K][BEq K] [BEq V] : BEq (Lean.HashMap K V) where
+instance [BEq V]: BEq (Lean.HashMap K V) where
   beq xs ys :=
     xs.size == ys.size && xs.all (fun k v => ys.findD k v == v)
 
@@ -123,21 +127,21 @@ the transformed key-value pairs.
 
 TODO(alok): is this just an endofunctor? should it return a hashmap and keep the shape?
 -/
-def map [BEq K] [Hashable K] [BEq K'] [Hashable K'] (f : K → V → (K' × V')) (m : Lean.HashMap K V) : Lean.HashMap K' V' := Id.run do
+def map (f : K → V → (K' × V')) (xs : Lean.HashMap K V) : Lean.HashMap K' V' := Id.run do
   let mut result := .empty
-  for (k, v) in m do
+  for (k, v) in xs do
     let (k', v') := f k v
     result := result.insert k' v'
   return result
 
 /-- Display as #{ a ↦ b, c ↦ d }-/
-instance [Hashable a] [BEq a] [Repr a] [Repr b]: Repr (Lean.HashMap a b) where
+instance [Repr K] [Repr V] : Repr (Lean.HashMap K V) where
   reprPrec m _ :=
     let entries := m.toArray.map (fun (k, v) => s!"{repr k} ↦ {repr v}")
     "#{" ++ entries.intersperse ", " ++ "}"
 
 
-instance [ToString a] [ToString b] [BEq a] [Hashable a] : ToString (Lean.HashMap a b) where
+instance [ToString K] [ToString V] : ToString (Lean.HashMap K V) where
   toString m := Id.run do
     let mut out := #[]
     for (k, v) in m do
@@ -149,7 +153,7 @@ instance [ToString a] [ToString b] [BEq a] [Hashable a] : ToString (Lean.HashMap
 This function applies the given predicate `f` to each key-value pair in the `HashMap`.
 It returns a new `HashMap` with the key-value pairs that satisfy the predicate.
 -/
-def filter [BEq a] [Hashable a] (xs: Lean.HashMap a b) (f: a → b → Bool) : Lean.HashMap a b :=
+def filter (xs: Lean.HashMap K V) (f: K → V → Bool) : Lean.HashMap K V :=
   Id.run do
     let mut result := .empty
     for (k, v) in xs do
@@ -162,11 +166,11 @@ def filter [BEq a] [Hashable a] (xs: Lean.HashMap a b) (f: a → b → Bool) : L
 This function applies the given function `f` to each value in the `HashMap`,
 keeping the keys unchanged.
 -/
-def mapValues [BEq k] [Hashable k] (f : v → v') (xs : Lean.HashMap k v) : Lean.HashMap k v' :=
+def mapValues (f : V → V') (xs : Lean.HashMap K V) : Lean.HashMap K V' :=
   xs.map ((·, f ·))
 
 /-- This function creates a new `HashMap` with a single key-value pair, using the given `k` and `v` as the key and value respectively. -/
-def singleton [BEq K] [Hashable K] (k:K) (v : V) : Lean.HashMap K V := Lean.HashMap.empty.insert k v
+def singleton (k: K) (v : V) : Lean.HashMap K V := Lean.HashMap.empty.insert k v
 
 /-- Syntax category for `HashMap` items separated by the $\maps$ symbol -/
 syntax hashMapItem := term " ↦ " term
