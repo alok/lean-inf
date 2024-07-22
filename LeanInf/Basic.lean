@@ -34,10 +34,10 @@ macro_rules
 #eval #[x | for x in #[1,2,3] if x > 2]
 #eval #[#[x | for x in #[1,2,3] ] | for _ in #[1,2,3]]
 
-private def dropWhile (xs : Array a) (p : a → Bool) : Array a :=
-  match xs.findIdx? (fun x => !p x) with
+private def dropWhile (array : Array a) (predicate : a → Bool) : Array a :=
+  match array.findIdx? (!predicate ·) with
   | none => #[]
-  | some i => xs[i:]
+  | some i => array[i:]
 
 /-- Compute the sum of all elements in an array. -/
 private def sum [Add a] [Zero a] (arr : Array a) : a :=
