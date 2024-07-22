@@ -16,27 +16,29 @@ def _root_.Array.maxBy? [Ord b] [Max b] [LT b] [DecidableRel (@LT.lt b _)] (xs :
       | .lt => acc
       | .eq|.gt  => some x  -- Keep the last element in case of equality
 
-inductive BinTree (a : Type)   where
-  | leaf : a → BinTree a
-  | node : a → BinTree a → BinTree a → BinTree a
-deriving Repr,Inhabited,BEq
-
-def BinTree.binSearch [BEq a][Ord a][DecidableEq a] (xs : BinTree a) (x : a) : Option a :=
-  match xs with
-  | .leaf y => if x == y then some y else none
-  | .node y left right =>
-      match compare x y with
-      | .lt => binSearch left x
-      | .eq => some y
-      | .gt => binSearch right x
 
 #eval #[1,2,3].maxBy? (fun x => x)
 
--- TODO rm? too overlapping-/
+/-- Subtraction via addition and negation -/
 local instance [Neg a] [Add a] : Sub a where
   sub x y := x + (-y)
+/- Division via multiplication and inversion -/
 local instance [Inv a] [Mul a]: Div a where
   div x y := x * y⁻¹
+/- Inversion via dividing 1  -/
+local instance [Div a] [One a]: Inv a where
+  inv x := 1 / x
+
+/-- Exponentiation via squaring. -/
+local instance [Mul a][One a]: HPow a ℕ a where
+  hPow x n := Id.run do
+    let mut (result, base, exp) := (1, x, n)
+    while exp > 0 do
+      if exp % 2 == 1 then
+        result := result * base
+      base := base * base
+      exp := exp / 2
+    result
 
 @[inherit_doc Rat]
 abbrev Exponent := Rat
@@ -178,6 +180,9 @@ instance : OfScientific Polynomial' where
 #eval (0.2341423190:Rat)
 #eval Polynomial'.empty == (⟨#{0.0 ↦ 0}⟩ : Polynomial')
 
+/--Compute the sign of a term (-1, 0, 1). -/
+def signum (x: Term) : Int :=
+  if x.coeff > 0 then 1 else if x.coeff < 0 then -1 else 0
 
 
 #eval Polynomial'.empty
