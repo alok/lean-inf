@@ -7,6 +7,7 @@ open Parser
 
 namespace Array
 
+namespace Notation
 /-- Array comprehension notation -/
 declare_syntax_cat compClause
 
@@ -30,6 +31,7 @@ macro_rules
       if $p then out := out.push $t
     return out)
   | `(#[$t | $c, $cs,*]) => `(Array.join #[#[$t | $cs,*] | $c ])
+end Notation
 
 #eval #[x | for x in #[1,2,3] if x > 2]
 #eval #[#[x | for x in #[1,2,3] ] | for _ in #[1,2,3]]
@@ -65,13 +67,10 @@ protected def intersperse (separator : String) (array : Array String) : String :
     out := out ++ array[i]
   return out
 
-
 #eval #[1, 2, 3, 4].sum = 10
 #eval #[].sum = 0
 #eval #[1, 2, 3, 4].prod = 24
 #eval #[].prod = 1
-
-
 
 #eval #[2 | for _ in [1,2]]
 #eval #[x | for (x, _) in [(1,2),(3,4)]]
@@ -87,9 +86,7 @@ protected def intersperse (separator : String) (array : Array String) : String :
 
 end Array
 
-
 namespace Lean.HashMap
-
 
 variable {K V K' V' : Type}
 variable [Hashable K] [BEq K] [Hashable K'] [BEq K']
@@ -139,7 +136,6 @@ instance [Repr K] [Repr V] : Repr (Lean.HashMap K V) where
   reprPrec m _ :=
     let entries := m.toArray.map (fun (k, v) => s!"{repr k} ↦ {repr v}")
     "#{" ++ entries.intersperse ", " ++ "}"
-
 
 instance [ToString K] [ToString V] : ToString (Lean.HashMap K V) where
   toString m := Id.run do
@@ -195,22 +191,15 @@ macro_rules
 
 end Lean.HashMap
 
-namespace Option
 /-- Unwraps an option, returning the contained value if it is `some`, or a default value if it is `none`. -/
-def unwrapOr [Inhabited a] (val: Option a) (default : a := Inhabited.default) : a :=
+def _root_.Option.unwrapOr [Inhabited a] (val: Option a) (default : a := Inhabited.default) : a :=
   val.getD default
 
 #eval (some 3).unwrapOr
 #eval none.unwrapOr 2
 
-end Option
-
-namespace List
-
 /-- Construct a new empty list. -/
-def empty: List a := []
-
-end List
+def _root_.List.empty: List a := []
 
 /-- Local notation for creating a rational number. -/
 local notation a "÷" b => Lean.mkRat (num := a) (den := b)
@@ -218,8 +207,6 @@ local notation a "÷" b => Lean.mkRat (num := a) (den := b)
 /-- TODO these instances aren't equal? `Lean.Rat` and `ℚ`-/
 instance : Hashable Lean.Rat  where hash r := hash (hash r.num, hash r.den)
 instance : Hashable ℚ where hash r := hash (hash r.num, hash r.den)
-
-
 
 -- #eval hash (1 ÷ 4) == hash (Lean.mkRat 5 20)
 -- #eval (1 ÷ 2) < (3 ÷ 4:Lean.Rat)
