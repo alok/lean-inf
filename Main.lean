@@ -548,7 +548,7 @@ We want (a < b) to be decidable. -/
 instance : LE LeviCivitaNum where
   le x y := (x - y).signum == (-1:Int)
 
-instance LT : LT LeviCivitaNum where
+instance : LT LeviCivitaNum where
   lt x y  := (x-y).signum = -1
 
 instance : DecidableRel (@LT.lt LeviCivitaNum _) :=
