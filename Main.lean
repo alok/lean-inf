@@ -22,12 +22,13 @@ def _root_.Array.maxBy? [Ord b] [Max b] [LT b] [DecidableRel (@LT.lt b _)] (xs :
 /-- Subtraction via addition and negation -/
 local instance [Neg a] [Add a] : Sub a where
   sub x y := x + (-y)
-/- Division via multiplication and inversion -/
-local instance [Inv a] [Mul a]: Div a where
-  div x y := x * y⁻¹
 /- Inversion via dividing 1  -/
 local instance [Div a] [One a]: Inv a where
   inv x := 1 / x
+/- Division via multiplication and inversion -/
+local instance [Inv a] [Mul a]: Div a where
+  div x y := x * y⁻¹
+local instance [Repr a]: ToString a where toString x := s!"{repr x}"
 
 /-- Exponentiation via squaring. -/
 local instance [Mul a][One a]: HPow a ℕ a where
