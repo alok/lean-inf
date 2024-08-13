@@ -8,7 +8,16 @@ import Lean.Data.Rat
 import LeanInf.Basic
 
 
+/-- Check if a natural number is even -/
+def _root_.Nat.isEven (n : Nat) : Bool := n % 2 == 0
+/-- Check if a natural number is odd -/
+def _root_.Nat.isOdd (n : Nat) : Bool := n % 2 == 1
+/-- Check if an integer is even -/
+def _root_.Int.isEven (n : Int) : Bool := n % 2 == 0
+/-- Check if an integer is odd -/
+def _root_.Int.isOdd (n : Int) : Bool := n % 2 == 1
 
+#eval (1).isOdd
 def _root_.Array.maxBy? [Ord b] [Max b] [LT b] [DecidableRel (@LT.lt b _)] (xs : Array a) (f : a → b) : Option a :=
   xs.foldl (init := none) fun acc x =>
     match acc with
@@ -36,7 +45,7 @@ local instance [Mul a] [One a]: HPow a ℕ a where
   hPow x n := Id.run do
     let mut (result, base, exp) := (1, x, n)
     while exp > 0 do
-      if exp % 2 == 1 then
+      if exp.isOdd then
         result := result * base
       base := base * base
       exp := exp / 2
