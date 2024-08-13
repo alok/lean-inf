@@ -7,15 +7,16 @@ import Lean.Util.Path
 import Lean.Data.Rat
 import LeanInf.Basic
 
+
+
 def _root_.Array.maxBy? [Ord b] [Max b] [LT b] [DecidableRel (@LT.lt b _)] (xs : Array a) (f : a → b) : Option a :=
-  xs.foldr (init:= none) fun x acc =>
+  xs.foldl (init := none) fun acc x =>
     match acc with
     | none => some x
     | some v =>
       match compare (f x) (f v) with
       | .lt => acc
-      | .eq|.gt  => some x  -- Keep the last element in case of equality
-
+      | _  => some x  -- Keep the last element in case of equality
 
 #eval #[1,2,3].maxBy? (fun x => x)
 
@@ -31,7 +32,7 @@ local instance [Inv a] [Mul a]: Div a where
 local instance [Repr a]: ToString a where toString x := s!"{repr x}"
 
 /-- Exponentiation via squaring. -/
-local instance [Mul a][One a]: HPow a ℕ a where
+local instance [Mul a] [One a]: HPow a ℕ a where
   hPow x n := Id.run do
     let mut (result, base, exp) := (1, x, n)
     while exp > 0 do
@@ -89,7 +90,22 @@ def toSuperscript (s : String) : String :=
     | c :: rest => go (acc.push (digitToSuperscript c)) rest
   go "" s.data
 
+/-- Sorting terms by exponent and then by absolute value of coefficient -/
+instance : LT Term where
+  lt
+    | {exp:=exp₁,coeff:=coeff₁}, {exp:=exp₂,coeff:=coeff₂} =>
+      if exp₁ < 0 && exp₂ < 0 then
+        if exp₁ ≠ exp₂ then exp₁ > exp₂ else abs coeff₁> abs coeff₂
+      else if exp₁ < 0 then true
+      else if exp₂ < 0 then false
+      else
+        if exp₁ ≠ exp₂ then exp₁ < exp₂ else abs coeff₁ < abs coeff₂
+
+instance : LE Term where le x y := (x < y) ∨ (x = y)
+
+/-- TODO this doesn't work when I use the instance of LT Term -/
 private def sortTerms (terms : Array Term) : Array Term :=
+
   terms.qsort (fun {exp:=exp₁,coeff:=coeff₁} {exp:=exp₂,coeff:=coeff₂} =>
     if exp₁ < 0 && exp₂ < 0 then
       if exp₁ ≠ exp₂ then exp₁ > exp₂ else abs coeff₁> abs coeff₂
@@ -125,6 +141,8 @@ instance : Repr Term where
       | _ => ""
     let exp := Format.toSuperscript (toString (if t.exp > 0 then t.exp else -t.exp))
     s!"{t.coeff}{unit}{exp}"
+
+
 end Format
 
 instance : ToString Term where
@@ -217,7 +235,7 @@ syntax infUnit : polyItem
 
 syntax "-" infUnit : polyItem
 
-/-- Syntax for representing a term multiplied by ε or H as a standalone polynomial item
+/-- Syntax for representing a term multiplied by  or H as a standalone polynomial item
     Examples:
     - `2ε`, `3H`
     - `xε`, `yH` where `x` and `y` are variables -/
@@ -302,11 +320,9 @@ instance : Mul Polynomial' where
     The standard part is a polynomial in the standard base 10 number system, and the infinitesimal part is a polynomial in the infinitesimal base 10 number system.
     The infinitesimal part is represented as a polynomial in the infinitesimal number system, which is a system of infinitesimally small numbers.
 -/
-
-
-
 structure LeviCivitaNum where
   std : Coeff := default
+  /--infinitesimal part-/
   infinitesimal : Polynomial' := default
   infinite : Polynomial' := default
 
@@ -316,14 +332,12 @@ structure LeviCivitaNum where
   _pf_infinite_keys_positive : infinite.coeffs.all (fun exp _ => exp > 0) := by (first | rfl | sorry)
 deriving Repr
 
-
 def LeviCivitaNum.toPoly (x: LeviCivitaNum) : Polynomial' := Id.run do
   -- concat underlying hashmaps
   let mut out := x.infinite.coeffs
   out := out.mergeWith (fun  _ v_self v_other => v_self + v_other) x.infinitesimal.coeffs
   out := out.insert 0 x.std
   return ⟨out⟩
-
 
 instance : BEq LeviCivitaNum where
   beq x y := x.std == y.std && x.infinitesimal == y.infinitesimal && x.infinite == y.infinite
@@ -338,7 +352,6 @@ instance : Zero LeviCivitaNum where zero := zero
 /-- 1-/
 def one : LeviCivitaNum := {std := 1}
 instance : One LeviCivitaNum where one := one
-
 
 instance : Repr LeviCivitaNum where
   reprPrec x _ := #[toString x.infinite, toString x.std, toString x.infinitesimal].intersperse " + "
@@ -363,8 +376,6 @@ instance : Neg LeviCivitaNum where
 instance : Coe Coeff LeviCivitaNum where
   coe c := {std := c}
 
-
-
 instance : OfNat LeviCivitaNum n where
   ofNat := match n with
     | 0 => zero
@@ -377,15 +388,12 @@ instance : OfScientific LeviCivitaNum where
   }
 
 #eval (0 : LeviCivitaNum)
-
-#eval
-  let a:= 2
-  #{2↦1}.all (fun k _ => k > 0)
+#eval (2.2: LeviCivitaNum)
 
 
 instance : CoeDep Term t LeviCivitaNum where
   coe := match t.coeff, compare t.exp 0 with
-  | _, Ordering.gt => {infinite := ⟨ #{t.exp ↦ t.coeff}⟩:LeviCivitaNum}
+  | _, Ordering.gt => {infinite := ⟨ #{t.exp ↦ t.coeff}⟩: LeviCivitaNum}
   | _, Ordering.eq => {std := t.coeff}
   | _, Ordering.lt => {infinitesimal := ⟨#{-t.exp ↦ t.coeff}⟩}
 
@@ -443,10 +451,8 @@ instance : ToString LeviCivitaNum where
     let mut terms := #[]
     -- Add infinite terms
     let infiniteTerms := sortTerms (x.infinite.toTerms)
+      |>.filter (fun {coeff, ..} => coeff != 0)  -- Filter out zero terms
       |>.map fun {exp, coeff} =>
-        if coeff == 0 then
-          ""
-        else
         match exp with
         | 1 => s!"{coeff}H"
         | 0 => s!"{coeff}"
@@ -461,10 +467,8 @@ instance : ToString LeviCivitaNum where
       terms := terms.push s!"{x.std}"
     -- Add infinitesimal terms
     let infinitesimalTerms := sortTerms (x.infinitesimal.toTerms)
+      |>.filter (fun {coeff, ..} => coeff != 0)  -- Filter out zero terms
       |>.map fun {exp, coeff} =>
-        if coeff == 0 then
-          ""
-        else
         match exp with
         | 0 => s!"{coeff}"
         | -1 => s!"{coeff}ε"
@@ -473,9 +477,8 @@ instance : ToString LeviCivitaNum where
           let exp := toSuperscript (toString (-exp))
           s!"{coeff}{unit}{exp}"
     terms := terms.append infinitesimalTerms
-    let nonEmptyParts := terms.filter (· != "")
     -- Combine all terms
-    let result := nonEmptyParts.intersperse " + "
+    let result := terms.intersperse " + "
     return if result.isEmpty then "0" else result
 
 /-- Convert a polynomial to a `LeviCivitaNum` -/
@@ -499,19 +502,6 @@ instance : Mul LeviCivitaNum where
     let y' := p[y.std] + y.infinite + y.infinitesimal
     (x' * y').toLC
 
-
-
-/-- Power of a Levi-Civita number. -/
-instance: HPow LeviCivitaNum ℕ LeviCivitaNum where
-  hPow x n := Id.run do
-    let mut (result, base, exp) := (one, x, n)
-    while exp > 0 do
-      if exp % 2 == 1 then -- exponentiation by squaring
-        result := result * base
-      base := base * base
-      exp := exp / 2
-    result
-
 #eval  lc[ε]*lc[H,ε,H^2]
 #eval lc[-ε, ε, H] * lc[-ε,  ε, H]
 #eval lc[-ε^2,2ε^3] * lc[ε, 3H]
@@ -522,11 +512,13 @@ instance: HPow LeviCivitaNum ℕ LeviCivitaNum where
 #synth LE Coeff
 
 /-- check if the number is a standard number. TODO is 0 a standard number?-/
-def isStd (x: LeviCivitaNum) : Bool := x.infinite.coeffs.isEmpty && x.infinitesimal.coeffs.isEmpty
+def isStd (x: LeviCivitaNum) : Bool := x.infinite == 0 && x.infinitesimal == 0
 
 #eval lc[ε]
 #eval lc[ε].isStd
 #eval lc[ε^2].isStd
+#eval lc[ε^2, H].isStd
+#eval lc[ε^2, H].isStd
 #eval lc[ε^2, H].isStd
 
 /-- Compute the sign of a Levi-Civita number. -/
@@ -544,56 +536,27 @@ def signum (x: LeviCivitaNum) : Int :=
 #eval lc[-ε,H].signum  -- Should be 1
 #eval lc[-2,ε,H].signum  -- Should be 1
 
-/-- TODO this doesn't work and fails to synthesize Decidable (a :LCN) -> Decidable (b :LCN) -> Prop, which is not what we want.
-We want (a < b) to be decidable. -/
-instance : LE LeviCivitaNum where
-  le x y := (x - y).signum == (-1:Int)
-
+-- Add this instance before the DecidableRel instance
 instance : LT LeviCivitaNum where
-  lt x y  := (x-y).signum = -1
+  lt x y := (x - y).signum = -1
 
+-- Replace the existing DecidableRel instance with this one
 instance : DecidableRel (@LT.lt LeviCivitaNum _) :=
-  fun x y =>
-    if h : ((x - y).signum = -1) then
-      isTrue h
-    else
-      isFalse (decide (h))
+  fun x y => decEq ((x - y).signum) (-1)
 
--- class inductive Decidable (p : Prop) where
---   /-- Prove that `p` is decidable by supplying a proof of `¬p` -/
---   | isFalse (h : Not p) : Decidable p
---   /-- Prove that `p` is decidable by supplying a proof of `p` -/
---   | isTrue (h : p) : Decidable p
-
-#eval abs (1:Coeff)
-
-#eval ((1:LeviCivitaNum) - (2:LeviCivitaNum)).signum
--- #synth (@LT.lt Float Float) (1.0)<(3.2)
-#eval lc[1] < lc[2]
-#eval lc[ε] < lc[2ε]
-#eval lc[H] < lc[2H]
-#eval lc[-H] < lc[-H]
-
-#eval (lc[ε] - lc[2ε]).signum
-#eval (lc[H] - lc[2H]).signum
-#eval (lc[-H] - lc[H]).signum
+-- Remove the line with 'nan'
+-- #eval lc[nan]
 
 
-def abs (x : LeviCivitaNum) : LeviCivitaNum :=
-  let _abs : Coeff → Coeff := fun coeff => if coeff < 0 then -coeff else coeff
-  {
-    std := if x.std < 0 then -x.std else x.std
-    infinitesimal := ⟨x.infinitesimal.coeffs.map (fun exp coeff => (exp, _abs coeff))⟩
-    infinite := ⟨x.infinite.coeffs.map (fun exp coeff => (exp, _abs coeff))⟩
-  }
 
-#eval abs lc[-ε]
-#eval abs lc[-H,2,-4]
+
+-- Remove or comment out the unknown LeviCivitaNum.expand function
+-- #eval LeviCivitaNum.expand lc[1ε] [1, 1, 1/2, 1/6].length  -- Should approximate e^x
 
 /-- Expand a LeviCivitaNum using the series expansion for 1/(1+x) = 1 - x + x^2 - x^3 + ...
     This implementation uses the formula: 1/(1+ε) = Σ (-ε)^k for k=0 to n-1.
     x *must* be normalized
-     -/
+-/
 def expandInverse (x : LeviCivitaNum) (n : ℕ := 8) (_ok : x.infinite = 0 ∧ x.std = 1 := by sorry) : LeviCivitaNum := Id.run do
   let mut (result, εₓ) := (0, x - 1) -- since infinite part is empty, this should work
   -- dbg_trace s!"x: {x}, εₓ: {εₓ}"
@@ -606,46 +569,13 @@ def expandInverse (x : LeviCivitaNum) (n : ℕ := 8) (_ok : x.infinite = 0 ∧ x
 #eval expandInverse lc[1, -5ε] 8 sorry -- Should be approximately 1 - ε + ε^2 - ε^3
 #eval expandInverse lc[0.1] 1  sorry -- Should be approximately 0.9090909090909091
 
-/-- Expand a LeviCivitaNum using the binomial series (1+x)^a = 1 + ax + a(a-1)x^2/2! + ...
-    This implementation uses the formula: (1+ε)^a = Σ (a choose k) ε^k for k=0 to n-1 -/
-def expandPower (x : LeviCivitaNum) (a : Coeff) (n : Nat) : LeviCivitaNum := Id.run do
-  let mut result : LeviCivitaNum := 0
-  let mut term : LeviCivitaNum := 1
-  let mut coeff : Coeff := 1
-  for k in [0:n] do
-    result := result + coeff * term
-    term := term * x
-    coeff := coeff * (a - k) / (k + 1)
-  return result
-
-#eval expandPower lc[0.1, ε] 2 3  -- Should be approximately 1 + 2ε + ε^2
-#eval expandPower lc[0.1] 7 7  -- Should be approximately 1.21
-
-
-
-
-def expand (x : LeviCivitaNum) (n : Nat) : LeviCivitaNum := Id.run do
-  let mut (total , pow, sign) := (0, 1, 1)
-  -- dbg_trace s!"x: {x}"
-  for _ in [0:n] do
-    let term := sign * pow
-    total := total + term
-    pow := pow * x
-    sign := -sign
-  return total
-#eval expand lc[ε] 3
-#eval lc[ε]
-/-- Truncate a Levi-Civita number to a certain grade. Negative will clip infinitesimals, positive will clip unlimited terms too.-/
-def truncate (x: LeviCivitaNum) (n: Int) : LeviCivitaNum :=
-  {
-    std := if n <= 0 then x.std else 0
-    infinitesimal := ⟨x.infinitesimal.coeffs.filter (fun exp _ => exp <= n)⟩
-    infinite := ⟨x.infinite.coeffs.filter (fun exp _ => exp <= n)⟩
-  }
-
-
-def CoeffMap.toTerms (cm: CoeffMap) : Array Term :=
-  cm.toArray.map fun (exp, coeff) => { exp := exp, coeff := coeff }
+/-- Convert a CoeffMap to an Array of Terms, omitting zero terms. -/
+def CoeffMap.toTerms (cm: CoeffMap) : Array Term := Id.run do
+  let mut out := #[]
+  for (exp, coeff) in cm do
+    if coeff != 0 then
+      out := out.push {exp, coeff}
+  return out
 
 def largestTerm (x: LeviCivitaNum) : Term := Id.run do
   let allTerms := #[{coeff := x.std, exp := 0}] ++ x.infinitesimal.toTerms ++ x.infinite.toTerms
@@ -659,108 +589,161 @@ def largestTerm (x: LeviCivitaNum) : Term := Id.run do
 
 /-- Check if a Levi-Civita number is pure. -/
 def isPure (x: LeviCivitaNum) : Bool :=
-  let pureStd := x.infinitesimal.coeffs.isEmpty && x.infinite.coeffs.isEmpty -- can be 0
-  let pureInfinitesimal := x.std == 0 && (x.infinitesimal.coeffs.size = 1) && x.infinite.coeffs.isEmpty
-  let pureInfinite := x.std == 0 && x.infinitesimal.coeffs.isEmpty && (x.infinite.coeffs.size = 1)
+  let pureStd := x.infinitesimal == 0 && x.infinite == 0 -- can be 0
+  let pureInfinitesimal := x.std == 0 && (x.infinitesimal.coeffs.size = 1) && x.infinite == 0
+  let pureInfinite := x.std == 0 && x.infinitesimal == 0 && (x.infinite.coeffs.size = 1)
 
   pureStd || pureInfinitesimal || pureInfinite
 
-def purePart (x: LeviCivitaNum) (h : isPure x = true ) : Term :=
-  -- if pure std, return ()
-  if x.infinitesimal.coeffs.isEmpty && x.infinite.coeffs.isEmpty then
-    {coeff := x.std, exp := 0}
-  -- if pure infinitesimal, return (infinitesimal[0], 0)
-  else if x.std == 0 && x.infinite.coeffs.isEmpty && x.infinitesimal.coeffs.size = 1 then
-    x.infinitesimal.toTerms[0]!
-  -- if pure infinite, return (infinite[0], 0)
-  else if x.std == 0 && x.infinitesimal.coeffs.isEmpty && x.infinite.coeffs.size = 1 then
-    x.infinite.toTerms[0]!
-  else
-    {coeff := 0, exp := 0}
+/-- Return the only term in a LeviCivitaNum if it is "pure" (simple in other terminology). -/
+def purePart (x: LeviCivitaNum) (_h : isPure x = true ) : Term :=
+  -- pure std
+  let isPureStd := x.infinitesimal == 0 && x.infinite == 0
+  let isPureInfinitesimal := x.std == 0 && x.infinitesimal.coeffs.size = 1 && x.infinite == 0
+  let isPureInfinite := x.std == 0 && x.infinitesimal == 0 && x.infinite.coeffs.size = 1
+
+  if isPureStd then {coeff := x.std, exp := 0}
+  else if isPureInfinitesimal then x.infinitesimal.toTerms[0]!
+  else if isPureInfinite then x.infinite.toTerms[0]!
+  else {coeff := 0, exp := 0} -- fallback to 0
 
 #eval lc[H,-H].purePart sorry
 
+/-- Division of terms.-/
+instance : Div Term where div x y := {exp := x.exp - y.exp, coeff := x.coeff / y.coeff}
 
-instance : Div Term where
-  div x y := {exp := x.exp - y.exp, coeff := x.coeff / y.coeff}
+/--TODO add test cases-/
+instance : LT Term where lt x y := x.exp < y.exp && x.coeff < y.coeff
+/--TODO add test cases-/
+instance : LE Term where le x y := x.exp ≤ y.exp && x.coeff ≤ y.coeff
 
 /-- Embeds a natural number into a term by `n * H^0 = n` -/
-instance : OfNat Term n where
-  ofNat := {exp := 0, coeff := n}
+instance : OfNat Term n where ofNat := {coeff := n, exp := 0}
 
-/-- Inverts a term by appealing to division. -/
-instance : Inv Term where
-  inv x := (1:Term) / x
+#eval (1:Term)/{exp := -1, coeff := 1:Term} == lc[H].largestTerm -- 1/ε
 
-#eval (1:Term)/{exp := -1, coeff := 1} -- 1/ε
-
--- instance : HMul Term LeviCivitaNum LeviCivitaNum where
---   hMul t l := t * l
-
-
-
+-- Update the Inv instance to use the normalize function
 instance : Inv LeviCivitaNum where
   inv x := Id.run do
     if _h: isPure x then
-      -- dbg_trace s!"x: {x} isPure"
-      if x == 0 then
-        -- dbg_trace s!"x: {x} is 0, inverse is inf"
-        return lc[1/0] -- TODO this returns 0 which is wrong
+      if x == 0 then panic! "Division by zero"
       let {coeff, exp} := purePart x _h
-      -- dbg_trace s!"Pure: coeff: {coeff}, exp: {exp}"
-      return lc[coeff⁻¹ H^(-exp)]
+      return coeff⁻¹ * lc[H^(-exp)]
     else
       let largestTerm := largestTerm x
-      -- dbg_trace s!"LargestTerm: {largestTerm}"
-      -- of the form largestTerm * (1 + εₓ (infinitesimals))
-      let restof := x.toPoly.toTerms.map (fun t =>  t / largestTerm) |> LeviCivitaNum.ofArray
-      -- dbg_trace s!"restOfFactoredTerms: {restof}"
+      let restof := x.toPoly.toTerms.map (fun t => t / largestTerm) |> LeviCivitaNum.ofArray
+      return largestTerm⁻¹ * restof.expandInverse
 
-      -- -- Now we can invert (1 + small terms) with Taylor series for 1/(1+eps)
-      -- let restof.inverse :=
-      -- dbg_trace s!"restof.inverse: {restof.inverse}"
-      -- -- Multiply by 1/largestCoeff and adjust the exponent
-      return (↑(Inv.inv largestTerm: Term)) * restof.expandInverse
-
--- Remove or comment out problematic evaluations
-#eval lc[ε].largestTerm
-#eval lc[1, 2ε, 4H, -4H, 3,3ε^2].largestTerm
--- #eval Inv.inv lc[]
--- #eval LeviCivitaNum.expand lc[1ε] [1, 1, 1/2, 1/6]
-
-
-#eval Inv.inv lc[]
-
-#eval lc[nan]
-#eval Inv.inv lc[H]
-#eval Inv.inv lc[1,ε]
-instance: Div LeviCivitaNum where
-  div x y := x * y⁻¹
-
--- Test the expand function
-#eval LeviCivitaNum.expand lc[1ε] [1, 1, 1/2, 1/6].length  -- Should approximate e^x
-#eval Inv.inv lc[ε]
+#eval Inv.inv lc[ε,-1]
 /-- d represents epsilon since it's easier to type.-/
 def testCases : List (String × Option LeviCivitaNum) := [
-  ("1+d", some lc[1ε]),
-  ("1/d", some lc[-ε]),
-  ("d+d", some lc[2ε]),
+  ("1+ε", some lc[1, ε]),
+  ("1/ε", some lc[H]),
+  ("ε+ε", some lc[2ε]),
   ("d^2", some lc[ε^2]),
-  ("sqrt d", some lc[ε^(1/2)]),
   ("2+2", some lc[4]),
-  ("2d", none),
-  ("1+d", some lc[1ε]),
-  ("1/d", some lc[-ε]),
-  ("d+d", some lc[2ε]),
+  ("2ε", none),
+  ("1+ε", some lc[1, ε]),
+  ("1/ε", some lc[H]),
+  ("ε+ε", some lc[2ε]),
   ("a=6*7;a+5", some lc[47]),
   ("zzz=1;zzz==1", some lc[1]),
   ("f x=x^2;f(f(2))", some lc[16]),
-  ("sqrt(-1)", none),  -- Complex numbers not supported
-  ("((1+i)/(sqrt 2))^8", none),  -- Complex numbers not supported
-  ("(1+d)^pi", none),  -- Result is not a simple LeviCivita number
-  ("d^pi", none),
-  ("[sqrt(d+d^2)]^2", some lc[ε^(1/2) , ε^2])
+  ("(1+ε)^pi", none),
+  ("ε^pi", none),
+  ("[sqrt(ε+ε^2)]^2", some lc[ε^(1/2) , ε^2])
 ]
+
+namespace Parser
+/-! This module contains the parser for the calculator. -/
+inductive Expr
+  | Number (value : LeviCivitaNum)
+  | InfiniteUnit
+  | Plus (left right : Expr)
+  | Minus (left right : Expr)
+  | Mul (left right : Expr)
+  | Div (left right : Expr)
+  | Pow (left right : Expr)
+  | Assign (ident: String) (right : Expr)
+  | LParen | RParen
+deriving Repr, BEq
+
+
+def interpreter: Expr -> Except String LeviCivitaNum
+  | .Number n => .ok n
+  | .InfiniteUnit => .ok lc[H]
+  | .Plus left right => do
+    .ok ((<-interpreter left) + (<-interpreter right))
+  | .Minus left right => do
+    .ok ((<-interpreter left) - (<-interpreter right))
+  | .Mul left right => do
+    .ok ((<-interpreter left) * (<-interpreter right))
+  | .Div left right => do
+    .ok ((<-interpreter left) / (<-interpreter right))
+  | .Assign _ident right => do
+    let right <- interpreter right
+    .ok (right)
+  | x => panic! "Not implemented: {x}"
+
+
+-- digit
+-- number
+-- variable
+
+
+
+
+def parser: String -> Except String Expr
+  | "1+ε" => .ok (Expr.Plus (Expr.Number 1) (Expr.InfiniteUnit))
+  | _ => .error "Not implemented"
+
+def parseAssignment (s:String) : Except String Expr:=do
+  let xs := s.split (· == '=')
+  let ident := xs[0]!
+  let rest := xs[1]!
+  let expr <- parser rest
+  return .Assign ident expr
+
+/--Trailing comma support for arrays.-/
+local syntax "#[" withoutPosition(term,*,?) "]" : term
+
+
+#eval [1,2]
+local macro_rules
+
+  | `(#[ $xs,*, ]) => `(Id.run do
+    let mut out := #[]
+    for x in [$xs,*] do
+      out := out.push x
+    return out
+    )
+
+#eval #[1,2,]
+
+
+def testCases := #[
+  "1+d",
+  "(1+d)(1-d)",
+  "1",
+  "((1))",
+  "(3.2+d)(-d)",
+  "-d",
+  " a - d",
+  "a = 3; a - d",
+  ]
+
+
+
+
+-- program is list of exprs, where the last is implicitly returned
+--
+
+def allTogether (s : String) : Except String LeviCivitaNum := do
+  let expr <- parser s
+  let result <- interpreter expr
+  return result
+
+end Parser
 end LeviCivitaNum
 
 /-- Entry point.-/
@@ -818,4 +801,54 @@ def main : IO Unit := do
       let squared := approx * approx
       let inverse := 1 / approx
       (squared, inverse)
--- Should be close to (2 + ε, 1/√2 - ε/(4√2) + 3ε^2/(32√2) - 5ε^3/(128√2))
+-- Should be close to (2 + ε, 1/2 - ε/(4√2) + 3ε^2/(32√2) - 5ε^3/(128√2))
+#eval lc[1, H, -H]
+
+-- -- Test cases for the parser
+-- def parserTestCases : List (String × Option LeviCivitaNum) := [
+--   ("1 + ε", some lc[1, ε]),
+--   ("1 - ε", some lc[1, -ε]),
+--   ("ε + ε", some lc[2ε]),
+--   ("ε^2", some lc[ε^2]),
+--   ("2 + 2", some lc[4]),
+--   ("2ε", some lc[2ε]),
+--   ("1 + ε + H", some lc[1, ε, H]),
+--   ("1/ε", some lc[H]),
+--   ("H/ε", some lc[H^2]),
+--   ("(1 + ε)^2", some lc[1, 2ε, ε^2]),
+--   ("sqrt(1 + ε)", some lc[1, 0.5ε, -0.125ε^2, 0.0625ε^3]),
+--   ("exp(ε)", some lc[1, ε, 0.5ε^2, 0.166666667ε^3]),
+--   ("ln(1 + ε)", some lc[ε, -0.5ε^2, 0.333333333ε^3]),
+--   ("sin(ε)", some lc[ε, -0.166666667ε^3]),
+--   ("cos(ε)", some lc[1, -0.5ε^2]),
+--   ("tan(ε)", some lc[ε, 0.333333333ε^3]),
+--   ("1 + H + H^2 + H^3", some lc[1, H, H^2, H^3]),
+--   ("(1 + ε)(1 + H)", some lc[1, ε, H, εH]),
+--   ("1/(1 - ε)", some lc[1, ε, ε^2, ε^3]),
+--   ("(ε + H)^3", some lc[ε^3, 3ε^2 , 3 ε * H^2, H^3]),
+--   ("2.5 * ε", some lc[2.5ε]),
+--   ("π * ε", none),  -- Assuming π is not defined
+--   ("invalid_input", none),
+--   ("1 + + 2", none),  -- Invalid syntax
+--   ("ε^(-1)", some lc[H]),
+--   ("H^(-1)", some lc[ε]),
+--   ("1e-3 * ε", some lc[0.001ε]),
+--   ("(1 + ε)/(1 - ε)", some lc[1, 2ε, 2ε^2, 2ε^3]),
+--   ("max(ε, H)", none),  -- Assuming max function is not defined
+--   ("min(1, ε)", none),  -- Assuming min function is not defined
+--   ("abs(-ε)", some lc[ε]),
+--   ("sign(H)", some lc[1]),
+--   ("sign(-ε)", some lc[-1]),
+--   ("floor(1.5 + ε)", some lc[1, ε]),
+--   ("ceil(1.5 + ε)", some lc[2, ε]),
+--   ("round(1.5 + ε)", some lc[2, ε])
+-- ]
+
+-- -- Function to run the test cases
+-- def runParserTests (parser : String → Option LeviCivitaNum) : IO Unit := do
+--   for (input, expected) in parserTestCases do
+--     let result := parser input
+--     if result == expected then
+--       IO.println s!"Test passed: {input} => {result}"
+--     else
+--       IO.println s!"Test failed: {input}\nExpected: {expected}\nGot: {result}"

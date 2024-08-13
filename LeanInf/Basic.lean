@@ -20,7 +20,6 @@ syntax ifClause := "if " term
 syntax "for " term " in " term " if " term : compClause
 /-- `#[x | for x in xs]` -/
 syntax "#[" term " | " compClause,* "]" : term
-
 /-- Semantics for Array comprehension notation.-/
 macro_rules
   | `(#[$t | for $x in $xs]) => `(($xs).map (fun $x ↦ $t))
