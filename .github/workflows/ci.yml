@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:  # Allow manual triggering
+
+
+jobs:
+  build:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install elan
+      run: |
+        set -o pipefail
+        curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- --default-toolchain leanprover/lean4:v4.10.0-rc1 -y
+        echo "$HOME/.elan/bin" >> $GITHUB_PATH
+
+    - name: Cache .lake
+      uses: actions/cache@v3
+      with:
+        path: .lake
+        key: ${{ runner.os }}-lake-${{ hashFiles('**/lakefile.lean') }}
+        restore-keys: |
+          ${{ runner.os }}-lake-
+
+    - name: Build project
+      run: lake build
+
+    - name: Run tests
+      run: lake exe test
