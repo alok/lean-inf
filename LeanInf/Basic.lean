@@ -1,9 +1,35 @@
 import Lean
 import Lean.Parser
+import Std
 import Batteries
 import Mathlib
-open Lean.Parsec
+open Lean.Parser
 open Parser
+
+
+/-- Check if a natural number is even -/
+def _root_.Nat.isEven (n : Nat) : Bool := n % 2 == 0
+/-- Check if a natural number is odd -/
+def _root_.Nat.isOdd (n : Nat) : Bool := n % 2 == 1
+/-- Check if an integer is even -/
+def _root_.Int.isEven (n : Int) : Bool := n % 2 == 0
+/-- Check if an integer is odd -/
+def _root_.Int.isOdd (n : Int) : Bool := n % 2 == 1
+
+
+def _root_.Array.maxBy? [Ord b] [Max b] [LT b] [DecidableRel (@LT.lt b _)] (xs : Array a) (f : a → b) : Option a :=
+  xs.foldl (init := none) fun acc x =>
+    match acc with
+    | none => some x
+    | some v =>
+      match compare (f x) (f v) with
+      | .lt => acc
+      | _  => some x  -- Keep the last element in case of equality
+
+#eval #[1,2,3].maxBy? (fun x => x)
+
+
+
 
 namespace Array
 
@@ -85,10 +111,10 @@ protected def intersperse (separator : String) (array : Array String) : String :
 
 end Array
 
-namespace Lean.HashMap
+namespace Std.HashMap
 
-variable {K V K' V' : Type}
-variable [Hashable K] [BEq K] [Hashable K'] [BEq K']
+variable {K V : Type}
+variable [Hashable K] [BEq K]
 
 /--
 Checks if all key-value pairs in a `HashMap` satisfy a given predicate.
@@ -96,7 +122,7 @@ Checks if all key-value pairs in a `HashMap` satisfy a given predicate.
 This function applies the given predicate `f` to each key-value pair in the `HashMap`.
 It returns `true` if all pairs satisfy the predicate, and `false` otherwise.
 -/
-def all (xs: Lean.HashMap K V) (f: K → V → Bool) : Bool :=
+def all (xs: Std.HashMap K V) (f: K → V → Bool) : Bool :=
   xs.fold (fun acc k v => acc && f k v) (init := true)
 
 /--
@@ -107,65 +133,32 @@ It returns `true` if any pair satisfies the predicate, and `false` otherwise.
 
 -- TODO does this short circuit? make test case
 -/
-def any (xs: Lean.HashMap K V) (f: K → V → Bool) : Bool :=
+def any (xs: Std.HashMap K V) (f: K → V → Bool) : Bool :=
   xs.fold (fun acc k v => acc || f k v) (init := false)
 
 -- TODO this may break?
-instance [BEq V]: BEq (Lean.HashMap K V) where
+instance [BEq V]: BEq (Std.HashMap K V) where
   beq xs ys :=
-    xs.size == ys.size && xs.all (fun k v => ys.findD k v == v)
+    xs.size == ys.size && xs.all (fun k v => ys.getD k v == v)
 
-/-- Maps both keys and values of a `HashMap` using a given function.
-
-This function applies the given function `f` to each key-value pair in the `HashMap`,
-allowing for both keys and values to be transformed. It returns a new `HashMap` with
-the transformed key-value pairs.
-
-TODO(alok): is this just an endofunctor? should it return a hashmap and keep the shape?
--/
-def map (f : K → V → (K' × V')) (xs : Lean.HashMap K V) : Lean.HashMap K' V' := Id.run do
-  let mut result := .empty
-  for (k, v) in xs do
-    let (k', v') := f k v
-    result := result.insert k' v'
-  return result
 
 /-- Display as #{ a ↦ b, c ↦ d }-/
-instance [Repr K] [Repr V] : Repr (Lean.HashMap K V) where
+instance [Repr K] [Repr V] : Repr (Std.HashMap K V) where
   reprPrec m _ :=
     let entries := m.toArray.map (fun (k, v) => s!"{repr k} ↦ {repr v}")
     "#{" ++ entries.intersperse ", " ++ "}"
 
-instance [ToString K] [ToString V] : ToString (Lean.HashMap K V) where
+instance [ToString K] [ToString V] : ToString (Std.HashMap K V) where
   toString m := Id.run do
     let mut out := #[]
     for (k, v) in m do
       out := out.push s!"{k} ↦ {v}"
     "#{" ++ out.intersperse ", " ++ "}"
 
-/-- Filters a `HashMap` based on a given predicate.
 
-This function applies the given predicate `f` to each key-value pair in the `HashMap`.
-It returns a new `HashMap` with the key-value pairs that satisfy the predicate.
--/
-def filter (xs: Lean.HashMap K V) (f: K → V → Bool) : Lean.HashMap K V :=
-  Id.run do
-    let mut result := .empty
-    for (k, v) in xs do
-      if f k v then
-        result := result.insert k v
-    return result
-
-/-- Maps the values of a `HashMap` using a given function.
-
-This function applies the given function `f` to each value in the `HashMap`,
-keeping the keys unchanged.
--/
-def mapValues (f : V → V') (xs : Lean.HashMap K V) : Lean.HashMap K V' :=
-  xs.map ((·, f ·))
 
 /-- This function creates a new `HashMap` with a single key-value pair, using the given `k` and `v` as the key and value respectively. -/
-def singleton (k: K) (v : V) : Lean.HashMap K V := Lean.HashMap.empty.insert k v
+def singleton (k: K) (v : V) : Std.HashMap K V := Std.HashMap.empty.insert k v
 
 /-- Syntax category for `HashMap` items separated by the $\maps$ symbol -/
 syntax hashMapItem := term " ↦ " term
@@ -175,8 +168,8 @@ syntax "#{" hashMapItem,* ","? "}" : term
 
 /-- Semantics for `HashMap` notation.-/
 macro_rules
-  | `(#{}) => `(Lean.HashMap.empty) -- 0
-  | `(#{$k ↦ $v}) => `(Lean.HashMap.singleton $k $v) -- 1
+  | `(#{}) => `(Std.HashMap.empty) -- 0
+  | `(#{$k ↦ $v}) => `(Std.HashMap.singleton $k $v) -- 1
   -- `mergeWith` instead of `.insert` is to ensure left to right order for insertion.
   | `(#{$k ↦ $v, $ks,*}) => `(#{$k ↦ $v}.mergeWith (f := fun _ _v₁ v₂ => v₂) (other := #{$ks,*} )) -- n
 
@@ -186,9 +179,9 @@ macro_rules
 #eval #{1 ↦ 1, 2 ↦ 2}
 #eval #{}.insert 2 2.0
 #eval toString #{1 ↦ 1, 2 ↦ 2}
-#eval #{1 ↦ 1, 2 ↦ 2}.mapValues (· + 1)
+#eval #{1 ↦ 1, 2 ↦ 2}.map ((fun x => x + 1):Nat->_->Nat)
 
-end Lean.HashMap
+end Std.HashMap
 
 /-- Unwraps an option, returning the contained value if it is `some`, or a default value if it is `none`. -/
 def _root_.Option.unwrapOr [Inhabited a] (val: Option a) (default : a := Inhabited.default) : a :=
