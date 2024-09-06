@@ -8,7 +8,6 @@ abbrev Exponent := Rat
 abbrev Coeff := Rat
 
 /-- A term in a polynomial. Given as `(Coeff, Exponent)`. -/
-
 structure Term where
   coeff: Coeff
   exp: Exponent
@@ -353,7 +352,7 @@ instance : OfScientific LeviCivitaNum where
 #eval (2.2: LeviCivitaNum)
 
 /-- Subtraction via addition and negation -/
-instance :Sub LeviCivitaNum where
+instance : Sub LeviCivitaNum where
   sub x y := x + (-y)
 
 /- Division via multiplication and inversion -/
@@ -486,11 +485,15 @@ instance : Mul LeviCivitaNum where
     let y' := p[y.std] + y.infinite + y.infinitesimal
     (x' * y').toLC
 
+instance : Sub Polynomial' where
+  sub x y := x + (-y)
+
+
 #eval! lc[ε]*lc[H,ε,H^2]
 #eval! lc[-ε, ε, H] * lc[-ε,  ε, H]
 #eval! lc[-ε^2,2ε^3] * lc[ε, 3H]
 #eval! lc[ε^2, 3ε^4] * lc[ε, 3H]
-#eval 0 - p[5H]
+#eval! 0 - p[5H]
 
 #eval 2.0 > 3.4
 #synth LE Coeff
@@ -618,8 +621,20 @@ instance : Inv LeviCivitaNum where
       let largestTerm := largestTerm x
       let restof := x.toPoly.toTerms.map (fun t => t / largestTerm) |> LeviCivitaNum.ofArray
       return largestTerm⁻¹ * restof.expandInverse
+
+
+-- was having issues with expressions like `1 - lc[2]` so I added this instance
+instance [Mul a] [Inv a] [Coe a LeviCivitaNum]: Div a where
+  div x y := (↑x) * (↑y)⁻¹
+
+
 instance : Div LeviCivitaNum where
   div x y := x * y⁻¹
 
+-- instance
+
+#eval! 1/ lc[2]
 #eval! Inv.inv lc[ε,-1]
 #eval! lc[ε] - lc[2]
+#eval! 1 - lc[2]
+end LeviCivitaNum
