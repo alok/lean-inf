@@ -1,17 +1,27 @@
 import Mathlib
 import LeanInf.Basic
 
+-- must be hashable
 @[inherit_doc Rat]
 abbrev Exponent := Rat
+/--The coefficient of a term in a polynomial that represents a Levi-Civita number. Set to float for now, but should be a typeclass-/
+abbrev Coeff := Float
 
-@[inherit_doc Rat]
-abbrev Coeff := Rat
+-- May break.
+local instance: Inv Float where
+  inv x := 1 / x
+
+class FloatLike (α : Type := Float) extends Add α, Mul α, Neg α, Inv α, Zero α, One α where
+  toFloat : α → Float := by exact id
+  fromFloat : Float → α := by exact id
+  abs : α → α := by first | exact Float.abs | exact abs
+instance : FloatLike Float where
 
 /-- A term in a polynomial. Given as `(Coeff, Exponent)`. -/
 structure Term where
   coeff: Coeff
   exp: Exponent
-deriving BEq, Inhabited
+deriving BEq, Inhabited, Repr
 
 /-- A map from exponents to coefficients -/
 abbrev CoeffMap := Std.HashMap Exponent Coeff  -- TODO use RbMap instead bc sorted?
@@ -44,31 +54,29 @@ def toSuperscript (s : String) : String :=
     | '-' :: rest => go (acc ++ "⁻") rest
     | c :: rest => go (acc.push (digitToSuperscript c)) rest
   go "" s.data
-
+#eval  Float.abs (1.1:Float)
+-- TODO do the float case separately and all the nice algebraic ones together
 /-- Sorting terms by exponent and then by absolute value of coefficient -/
 instance : LT Term where
   lt
     | {exp:=exp₁,coeff:=coeff₁}, {exp:=exp₂,coeff:=coeff₂} =>
       if exp₁ < 0 && exp₂ < 0 then
-        if exp₁ ≠ exp₂ then exp₁ > exp₂ else abs coeff₁> abs coeff₂
+        if exp₁ ≠ exp₂ then exp₁ > exp₂ else coeff₁.abs >  coeff₂.abs
       else if exp₁ < 0 then true
       else if exp₂ < 0 then false
       else
-        if exp₁ ≠ exp₂ then exp₁ < exp₂ else abs coeff₁ < abs coeff₂
+        if exp₁ ≠ exp₂ then exp₁ < exp₂ else coeff₁.abs < coeff₂.abs
+-- instance (t1 t2 : Term) : Decidable (t1 < t2) := match t1, t2 with
+--   | {exp:=exp₁,coeff:=coeff₁}, {exp:=exp₂,coeff:=coeff₂} =>
+--     if h:exp₁ ≠ exp₂ then isTrue (exp₁ > exp₂) else isFalse coeff₁.abs >  coeff₂.abs
 
 instance : LE Term where le x y := (x < y) ∨ (x = y)
-
+-- #eval (⟨1, 2⟩ : Term) < (⟨1, -2⟩ : Term)
+-- #eval (⟨1, 2⟩ : Term) ≤ (⟨1, -2⟩ : Term)
 /-- TODO this doesn't work when I use the instance of LT Term -/
 private def sortTerms (terms : Array Term) : Array Term :=
-
-  terms.qsort (fun {exp:=exp₁,coeff:=coeff₁} {exp:=exp₂,coeff:=coeff₂} =>
-    if exp₁ < 0 && exp₂ < 0 then
-      if exp₁ ≠ exp₂ then exp₁ > exp₂ else abs coeff₁> abs coeff₂
-    else if exp₁ < 0 then true
-    else if exp₂ < 0 then false
-    else
-      if exp₁ ≠ exp₂ then exp₁ < exp₂ else abs coeff₁ < abs coeff₂)
-
+  terms.qsort (fun x y => x.exp < y.exp)
+#eval sortTerms #[⟨1, 2⟩, ⟨1, -2⟩, ⟨2, 2⟩, ⟨2, -2⟩]
 instance : ToString Polynomial' where
   toString p := Id.run do
     let terms := p.toTerms
@@ -136,12 +144,13 @@ def empty : Polynomial' := ⟨.empty⟩
 /--  TODO: bad idea? Any real number can be represented as a polynomial with a single term. By the way, this also uses that 0^0 is 1 (since the constant term is x^0) -/
 instance : Coe Coeff Polynomial' where
   coe c := ⟨#{0 ↦ c}⟩
+
 #eval ((2:Coeff) : Polynomial')+((2:Coeff) : Polynomial')
 /-- Create a `Polynomial'` from a natural 'iiiinttcsdgh'ber -/
 instance : OfNat Polynomial' n where ofNat := match n with
   | 0 => .empty
   | 1 => ⟨#{0 ↦ 1}⟩
-  | _ => ⟨#{0 ↦ (n:Coeff)}⟩
+  | _ => ⟨#{0 ↦ (n.toFloat :Coeff)}⟩
 
 #eval ((2 : Polynomial')+(2 : Polynomial'))
 /-- For decimal and scientific numbers (e.g., `1.23`, `3.12e10`).
@@ -341,7 +350,7 @@ instance : OfNat LeviCivitaNum n where
   ofNat := match n with
     | 0 => zero
     | 1  => one
-    | _ => {std := (n:Coeff)}
+    | _ => {std := (n.toFloat :Coeff)}
 
 instance : OfScientific LeviCivitaNum where
   ofScientific mantissa exponentSign decimalExponent := {
@@ -598,14 +607,14 @@ def purePart (x: LeviCivitaNum) (_h : isPure x = true ) : Term :=
 
 /-- Division of terms.-/
 instance : Div Term where div x y := {exp := x.exp - y.exp, coeff := x.coeff / y.coeff}
-instance : Inv Term where inv x := {exp := -x.exp, coeff := x.coeff⁻¹}
+instance : Inv Term where inv x := {exp := -x.exp, coeff := 1/x.coeff}
 /--TODO add test cases-/
 instance : LT Term where lt x y := x.exp < y.exp && x.coeff < y.coeff
 /--TODO add test cases-/
 instance : LE Term where le x y := x.exp ≤ y.exp && x.coeff ≤ y.coeff
 
 /-- Embeds a natural number into a term by `n * H^0 = n` -/
-instance : OfNat Term n where ofNat := {coeff := n, exp := 0}
+instance : OfNat Term n where ofNat := {coeff := n.toFloat, exp := 0}
 
 #eval! (1:Term)/{exp := -1, coeff := 1:Term} == lc[H].largestTerm -- 1/ε
 -- 1/ (1 + eps - 4H ..)
@@ -616,7 +625,7 @@ instance : Inv LeviCivitaNum where
     if _h: isPure x then
       if x == 0 then panic! "Division by zero"
       let {coeff, exp} := purePart x _h
-      return coeff⁻¹ * lc[H^(-exp)]
+      return lc[1/coeff H^(-exp)]
     else
       let largestTerm := largestTerm x
       let restof := x.toPoly.toTerms.map (fun t => t / largestTerm) |> LeviCivitaNum.ofArray
