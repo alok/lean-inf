@@ -31,9 +31,20 @@ def interpreter: Expr -> Except String LeviCivitaNum
     .ok (right)
   | x => panic! s!"Not implemented: {x}"
 
+-- TODO impl local syntax
+-- TODO put in syntax namespace
+def Expr.infinitesimalUnit : Expr := .Div (Expr.Number 1) (Expr.InfiniteUnit)
+-- TODO this should be in the standard library-
+deriving instance BEq for Except
+#synth BEq (Except String LeviCivitaNum)
+
+#eval! interpreter (Expr.Plus (Expr.Number 1) (Expr.InfiniteUnit)) == .ok (lc[1, H])
+
 def parser: String -> Except String Expr
-  | "1+ε" => .ok (Expr.Plus (Expr.Number 1) (Expr.InfiniteUnit))
-  | _ => .error "Not implemented"
+| "d" => .ok (Expr.Div (Expr.Number 1) (Expr.InfiniteUnit))
+| "H" => .ok (Expr.InfiniteUnit)
+| "1+d" => .ok (Expr.Plus (Expr.Number 1) (Expr.InfiniteUnit))
+| _ => .error "Not implemented"
 
 def parseAssignment (s:String) : Except String Expr:=do
   let xs := s.split (· == '=')
