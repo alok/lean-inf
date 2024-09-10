@@ -1,6 +1,13 @@
 import Mathlib
 import LeanInf.Basic
+import aesop
 
+/-- The signum function for floats. Returns 1 for positive numbers, -1 for negative numbers, and 0 for zero.-/
+def _root_.Float.signum (x : Float) : Float :=
+  if x > 0 then 1 else if x < 0 then -1 else 0
+/-- For dependent elimination. -/
+def _root_.Float.intSignum (x : Float) : Int :=
+  if x > 0 then 1 else if x < 0 then -1 else 0
 -- must be hashable
 @[inherit_doc Rat]
 abbrev Exponent := Rat
@@ -10,11 +17,17 @@ abbrev Coeff := Float
 -- May break.
 local instance: Inv Float where
   inv x := 1 / x
-
+-- TODO do the float case separately and all the nice algebraic ones together
+/-- A typeclass for types that behave like floats. Main example is `Float` itself.-/
 class FloatLike (α : Type := Float) extends Add α, Mul α, Neg α, Inv α, Zero α, One α where
   toFloat : α → Float := by exact id
   fromFloat : Float → α := by exact id
   abs : α → α := by first | exact Float.abs | exact abs
+  /--A function that returns -1,0,1 for negative, zero, and positive numbers respectively.-/
+  signum : α → Float := by exact Float.signum
+  intSignum : α → Int := by exact Float.intSignum
+
+/--A float is a floatlike type certainly. -/
 instance : FloatLike Float where
 
 /-- A term in a polynomial. Given as `(Coeff, Exponent)`. -/
@@ -31,6 +44,8 @@ structure Polynomial' where
   coeffs : CoeffMap := default
 deriving Repr, Inhabited
 
+-- TODO try out the list comp syntax here
+/--Convert a coefficient map to an array of terms. -/
 def CoeffMap.toTerms (m : CoeffMap) : Array Term := Id.run do
   let mut terms := Array.mkEmpty m.size
   for (exp, coeff) in m do
@@ -54,29 +69,66 @@ def toSuperscript (s : String) : String :=
     | '-' :: rest => go (acc ++ "⁻") rest
     | c :: rest => go (acc.push (digitToSuperscript c)) rest
   go "" s.data
-#eval  Float.abs (1.1:Float)
--- TODO do the float case separately and all the nice algebraic ones together
+
+
+
 /-- Sorting terms by exponent and then by absolute value of coefficient -/
 instance : LT Term where
-  lt
-    | {exp:=exp₁,coeff:=coeff₁}, {exp:=exp₂,coeff:=coeff₂} =>
-      if exp₁ < 0 && exp₂ < 0 then
-        if exp₁ ≠ exp₂ then exp₁ > exp₂ else coeff₁.abs >  coeff₂.abs
-      else if exp₁ < 0 then true
-      else if exp₂ < 0 then false
-      else
-        if exp₁ ≠ exp₂ then exp₁ < exp₂ else coeff₁.abs < coeff₂.abs
--- instance (t1 t2 : Term) : Decidable (t1 < t2) := match t1, t2 with
---   | {exp:=exp₁,coeff:=coeff₁}, {exp:=exp₂,coeff:=coeff₂} =>
---     if h:exp₁ ≠ exp₂ then isTrue (exp₁ > exp₂) else isFalse coeff₁.abs >  coeff₂.abs
+  lt t1 t2 :=
+    let (exp₁, exp₂,coeff₁, coeff₂,sign₁,sign₂) := (t1.exp, t2.exp,t1.coeff, t2.coeff,t1.coeff.intSignum,t2.coeff.intSignum)
 
+    match exp₁, exp₂, sign₁, sign₂ with
+    | exp₁, exp₂, -1, -1 =>
+      if exp₁ < 0 && exp₂ < 0 then
+        if exp₁ ≠ exp₂ then exp₁ < exp₂ else coeff₁.abs > coeff₂.abs
+      else if exp₁ < 0 then false
+      else if exp₂ < 0 then true
+      else
+        if exp₁ ≠ exp₂ then exp₁ > exp₂ else coeff₁.abs > coeff₂.abs
+    | _, _, -1, 1 => true
+    | _, _, 1, -1 => false
+    | _, _, 0, _ => false
+    | _, _, _, 0 => true
+    | _, _, _, _ => false
+
+/--A term is less than another term iff their exponents are different and the exponent of the first term is less than the exponent of the second term, or the exponents are equal and the absolute value of the coefficient of the first term is less than the absolute value of the coefficient of the second term.
+Examples
+
+```lean
+#eval (⟨1, 2⟩ : Term) < (⟨1, -2⟩ : Term)
+#eval (⟨1, 2⟩ : Term) < (⟨1, 2⟩ : Term)
+```
+
+-/
+instance (t1 t2 : Term) : Decidable (t1 < t2) := match t1, t2 with
+  | {exp:=exp₁,coeff:=coeff₁}, {exp:=exp₂,coeff:=coeff₂} =>
+    if exp₁  <  exp₂ then Decidable.isTrue (by sorry)
+    else if exp₁ > exp₂ then Decidable.isFalse (by sorry)
+    else Decidable.isTrue (by sorry)
+
+
+/--Terms are equal iff their exponents and coefficients are equal.-/
+instance : DecidableEq Term :=
+  fun t1 t2 =>
+    match t1, t2 with
+    | {exp:=exp₁,coeff:=coeff₁}, {exp:=exp₂,coeff:=coeff₂} =>
+      if exp₁  <  exp₂ then Decidable.isTrue (by sorry)
+      else if exp₁ > exp₂ then Decidable.isFalse (by sorry)
+      else Decidable.isTrue (coeff₁ = coeff₂)
+
+#eval! (⟨1, 2⟩ : Term)  (⟨1, -2⟩ : Term)
+
+/--The relation `LT` is decidable for terms.-/
+instance : DecidableRel (@LT.lt Term _) := inferInstance
 instance : LE Term where le x y := (x < y) ∨ (x = y)
+instance : DecidableRel (@LE.le Term _) := inferInstance
+
 -- #eval (⟨1, 2⟩ : Term) < (⟨1, -2⟩ : Term)
 -- #eval (⟨1, 2⟩ : Term) ≤ (⟨1, -2⟩ : Term)
 /-- TODO this doesn't work when I use the instance of LT Term -/
 private def sortTerms (terms : Array Term) : Array Term :=
   terms.qsort (fun x y => x.exp < y.exp)
-#eval sortTerms #[⟨1, 2⟩, ⟨1, -2⟩, ⟨2, 2⟩, ⟨2, -2⟩]
+#eval sortTerms #[⟨1, 2⟩, ⟨1, -2⟩, ⟨2, 2⟩, ⟨2, -2⟩, ⟨0, 0⟩]
 instance : ToString Polynomial' where
   toString p := Id.run do
     let terms := p.toTerms
@@ -146,13 +198,15 @@ instance : Coe Coeff Polynomial' where
   coe c := ⟨#{0 ↦ c}⟩
 
 #eval ((2:Coeff) : Polynomial')+((2:Coeff) : Polynomial')
-/-- Create a `Polynomial'` from a natural 'iiiinttcsdgh'ber -/
+
+/-- Create a `Polynomial'` from a natural number, representing `n` as a constant term $n H^0 = n$. -/
 instance : OfNat Polynomial' n where ofNat := match n with
   | 0 => .empty
   | 1 => ⟨#{0 ↦ 1}⟩
-  | _ => ⟨#{0 ↦ (n.toFloat :Coeff)}⟩
+  | _ => ⟨#{0 ↦ (n.toFloat )}⟩
 
 #eval ((2 : Polynomial')+(2 : Polynomial'))
+
 /-- For decimal and scientific numbers (e.g., `1.23`, `3.12e10`).
 
     Examples:
@@ -161,6 +215,7 @@ instance : OfNat Polynomial' n where ofNat := match n with
 -/
 instance : OfScientific Polynomial' where
   ofScientific mantissa exponentSign decimalExponent := ⟨#{0 ↦ .ofScientific mantissa exponentSign decimalExponent}⟩
+
 #eval (0.2341423190:Rat)
 #eval Polynomial'.empty == (⟨#{0.0 ↦ 0}⟩ : Polynomial')
 
@@ -297,10 +352,14 @@ structure LeviCivitaNum where
   -- /-- To ensure coeffs are in terms of `H`. -/
   _pf_infinite_keys_positive : infinite.coeffs.all (fun exp _ => exp > 0) := by (first | rfl | sorry)
 deriving Repr
+
+/-- Convert a LeviCivitaNum to a Polynomial' by concatenating the underlying hashmaps.-/
 def LeviCivitaNum.toPoly (x: LeviCivitaNum) : Polynomial' := Id.run do
-  -- concat underlying hashmaps
+  -- don't start empty,
   let mut out := x.infinite.coeffs
-  out := out.mergeWith (fun  _ v_self v_other => v_self + v_other) x.infinitesimal.coeffs
+  -- add infinitesimal part
+  out := out.mergeWith (fun _ self_val other_val => self_val + other_val) x.infinitesimal.coeffs
+  -- add standard part
   out := out.insert 0 x.std
   return ⟨out⟩
 
@@ -308,8 +367,6 @@ instance : BEq LeviCivitaNum where
   beq x y := x.std == y.std && x.infinitesimal == y.infinitesimal && x.infinite == y.infinite
 
 namespace LeviCivitaNum
-
-
 
 
 /-- 0 -/
@@ -323,7 +380,6 @@ instance : One LeviCivitaNum where one := one
 
 instance : Repr LeviCivitaNum where
   reprPrec x _ := #[toString x.infinite, toString x.std, toString x.infinitesimal].intersperse " + "
-
 
 
 def _root_.LeviCivitaNum.ε : LeviCivitaNum := {infinitesimal := ⟨#{-1 ↦ 1}⟩}
@@ -541,10 +597,7 @@ instance : DecidableRel (@LT.lt LeviCivitaNum _) :=
   fun x y => decEq ((x - y).signum) (-1)
 
 -- Remove the line with 'nan'
--- #eval lc[nan]
-
-
-
+#eval! lc[Float.nan]
 
 -- Remove or comment out the unknown LeviCivitaNum.expand function
 -- #eval LeviCivitaNum.expand lc[1ε] [1, 1, 1/2, 1/6].length  -- Should approximate e^x
@@ -616,6 +669,7 @@ instance : LE Term where le x y := x.exp ≤ y.exp && x.coeff ≤ y.coeff
 /-- Embeds a natural number into a term by `n * H^0 = n` -/
 instance : OfNat Term n where ofNat := {coeff := n.toFloat, exp := 0}
 
+
 #eval! (1:Term)/{exp := -1, coeff := 1:Term} == lc[H].largestTerm -- 1/ε
 -- 1/ (1 + eps - 4H ..)
 -- H⁻¹ (1 + eps ...)
@@ -639,8 +693,6 @@ instance [Mul a] [Inv a] [Coe a LeviCivitaNum]: Div a where
 
 instance : Div LeviCivitaNum where
   div x y := x * y⁻¹
-
--- instance
 
 #eval! 1/ lc[2]
 #eval! Inv.inv lc[ε,-1]
