@@ -8,18 +8,13 @@ def _root_.Float.signum (x : Float) : Float :=
 /-- For dependent elimination. -/
 def _root_.Float.intSignum (x : Float) : Int :=
   if x > 0 then 1 else if x < 0 then -1 else 0
--- must be hashable
-@[inherit_doc Rat]
-abbrev Exponent := Rat
-/--The coefficient of a term in a polynomial that represents a Levi-Civita number. Set to float for now, but should be a typeclass-/
-abbrev Coeff := Float
 
 -- May break.
 local instance: Inv Float where
   inv x := 1 / x
 -- TODO do the float case separately and all the nice algebraic ones together
 /-- A typeclass for types that behave like floats. Main example is `Float` itself.-/
-class FloatLike (α : Type := Float) extends Add α, Mul α, Neg α, Inv α, Zero α, One α where
+class FloatLike (α : Type := Float) extends Add α, Mul α, Neg α, Inv α, Zero α, One α, Repr α  where
   toFloat : α → Float := by exact id
   fromFloat : Float → α := by exact id
   abs : α → α := by first | exact Float.abs | exact abs
@@ -30,19 +25,34 @@ class FloatLike (α : Type := Float) extends Add α, Mul α, Neg α, Inv α, Zer
 /--A float is a floatlike type certainly. -/
 instance : FloatLike Float where
 
-/-- A term in a polynomial. Given as `(Coeff, Exponent)`. -/
-structure Term where
-  coeff: Coeff
-  exp: Exponent
-deriving BEq, Inhabited, Repr
+-- must be hashable
+@[inherit_doc Rat]
+abbrev Exponent := Rat
+/--The coefficient of a term in a polynomial that represents a Levi-Civita number. Set to float for now, but should be a typeclass-/
+-- abbrev Coeff α  := FloatLike α
+abbrev DefaultCoeff := Float
 
-/-- A map from exponents to coefficients -/
-abbrev CoeffMap := Std.HashMap Exponent Coeff  -- TODO use RbMap instead bc sorted?
+structure Coeff (α) where
+  val: α
+
+
+/-- A term in a polynomial. Given as `(Coeff, Exponent)`. -/
+structure Term (α: FloatLike) where
+  coeff:
+  exp: Exponent
+-- deriving BEq, Inhabited, Repr
+
+instance [FloatLike α] : BEq (@Term α _) where
+  beq x y := x.coeff.val == y.coeff.val && x.exp == y.exp
+#eval (⟨1, 2⟩ : Term) == (⟨1, 2⟩ : @Term Float _)
+-- /-- A map from exponents to coefficients -/
+abbrev CoeffMap [FloatLike α] := Std.HashMap Exponent (@Coeff α _)  -- TODO use RbMap instead bc sorted?
 
 /-- A polynomial, represented as a `HashMap` from exponents to coefficients -/
-structure Polynomial' where
-  coeffs : CoeffMap := default
+structure Polynomial' [FloatLike α] where
+  coeffs : @CoeffMap α _ := default
 deriving Repr, Inhabited
+
 
 -- TODO try out the list comp syntax here
 /--Convert a coefficient map to an array of terms. -/
