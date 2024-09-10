@@ -1,6 +1,6 @@
 - [ ] write parser for calculator
 - [ ] webpage (jsx embed lean?)
 - [ ] cite https://mediatum.ub.tum.de/doc/1444961/1444961.pdf#page59 and mikey strobel
-- [ ] add license so it'll build on reservoir
+- [x] add license so it'll build on reservoir
 - [ ] generalize typeclasses so it works with more data types
-- [ ] 
+- [ ]
