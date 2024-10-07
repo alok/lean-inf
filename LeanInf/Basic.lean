@@ -6,7 +6,7 @@ import Mathlib
 open Lean.Parser
 open Parser
 
-
+-- TODO import lean-utils from alok and
 /-- Check if a natural number is even -/
 def _root_.Nat.isEven (n : Nat) : Bool := n % 2 == 0
 /-- Check if a natural number is odd -/
@@ -27,9 +27,6 @@ def _root_.Array.maxBy? [Ord b] [Max b] [LT b] [DecidableRel (@LT.lt b _)] (xs :
       | _  => some x  -- Keep the last element in case of equality
 
 #eval #[1,2,3].maxBy? (fun x => x)
-
-
-
 
 namespace Array
 
