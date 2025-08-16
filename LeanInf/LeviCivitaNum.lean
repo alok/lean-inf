@@ -656,3 +656,5 @@ instance : Div LeviCivitaNum where
 -- #eval! lc[ε] - lc[2]
 -- #eval! 1 - lc[2]
 end LeviCivitaNum
+
+-- Sanity check moved to dedicated tests to avoid interacting with sorry-axioms.
