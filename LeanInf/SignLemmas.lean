@@ -1,24 +1,56 @@
 import LeanInf.LeviCivitaNum
+import LeanInf.Basic
 
 open LeviCivitaNum
 
 namespace LeanInf
 
-/-- If we insert a new coefficient into the infinitesimal map at an exponent strictly
-    lower than the current leading infinitesimal exponent, the overall sign stays the same.
-    This is a skeleton; we plan to discharge it with `grind` once the structure stabilizes. -/
+/-! Lemma skeletons for sign/invariant preservation. We will discharge them using
+    mvcgen/grind once structures stabilize. For now, these are placeholders to
+    make proof obligations explicit and localized. -/
+
+-- HashMap-level helpers
+theorem all_neg_insert
+    (m : Std.HashMap Exponent Coeff)
+    (h_all : m.all (fun e _ => decide (e < 0)) = true)
+    (e : Exponent) (he : e < 0) (c : Coeff)
+  : (m.insert e c).all (fun e' _ => decide (e' < 0)) = true := by
+  -- grind on fold/insert once available
+  sorry
+
+theorem all_pos_insert
+    (m : Std.HashMap Exponent Coeff)
+    (h_all : m.all (fun e _ => decide (e > 0)) = true)
+    (e : Exponent) (he : e > 0) (c : Coeff)
+  : (m.insert e c).all (fun e' _ => decide (e' > 0)) = true := by
+  sorry
+
+theorem all_neg_merge
+    (a b : Std.HashMap Exponent Coeff)
+    (ha : a.all (fun e _ => decide (e < 0)) = true)
+    (hb : b.all (fun e _ => decide (e < 0)) = true)
+    (f : Exponent → Coeff → Coeff → Coeff)
+  : (Std.HashMap.mergeWith a b f).all (fun e _ => decide (e < 0)) = true := by
+  sorry
+
+theorem all_pos_merge
+    (a b : Std.HashMap Exponent Coeff)
+    (ha : a.all (fun e _ => decide (e > 0)) = true)
+    (hb : b.all (fun e _ => decide (e > 0)) = true)
+    (f : Exponent → Coeff → Coeff → Coeff)
+  : (Std.HashMap.mergeWith a b f).all (fun e _ => decide (e > 0)) = true := by
+  sorry
+
+-- Sign preservation at the LC level (skeletons)
 theorem sign_preserved_by_infinitesimal_insert
     (x : LeviCivitaNum)
     (e : Exponent) (c : Coeff)
     (hneg : e < 0)
     (hle : ∀ e', x.infinitesimal.coeffs.contains e' → e ≤ e')
   : (signum x) = (signum { x with infinitesimal := ⟨x.infinitesimal.coeffs.insert e c⟩ }) := by
-  -- TODO: formalize via a sorted view of exponents and `largestTerm`
-  -- The `grind` tactic from the Lean reference (index map example) should automate
-  -- the case analysis over the finite map structure here.
+  -- Will follow from ordering of exponents and first-nonzero-term reasoning
   sorry
 
-/-- Analogous lemma for insertion into the infinite map with positive exponents. -/
 theorem sign_preserved_by_infinite_insert
     (x : LeviCivitaNum)
     (e : Exponent) (c : Coeff)
@@ -28,4 +60,3 @@ theorem sign_preserved_by_infinite_insert
   sorry
 
 end LeanInf
-
