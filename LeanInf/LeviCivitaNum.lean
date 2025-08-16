@@ -272,10 +272,9 @@ structure LeviCivitaNum where
 
   infinite : Polynomial' := 0
 
-  -- /-- To ensure coeffs are in terms of `H`. -/
-  _pf_infinitesimal_keys_negative : infinitesimal.coeffs.all (fun exp _ => exp < 0) := by (first | rfl | sorry)
-  -- /-- To ensure coeffs are in terms of `H`. -/
-  _pf_infinite_keys_positive : infinite.coeffs.all (fun exp _ => exp > 0) := by (first | rfl | sorry)
+  -- Invariants: ensure key signs match the intended part (ε: negative exponents, H: positive).
+  _pf_infinitesimal_keys_negative : infinitesimal.coeffs.all (fun exp _ => exp < 0)
+  _pf_infinite_keys_positive : infinite.coeffs.all (fun exp _ => exp > 0)
 deriving Repr
 def LeviCivitaNum.toPoly (x: LeviCivitaNum) : Polynomial' := Id.run do
   -- concat underlying hashmaps
@@ -304,12 +303,22 @@ namespace LeviCivitaNum
 
 
 /-- 0 -/
-def zero : LeviCivitaNum := {}
+def zero : LeviCivitaNum :=
+  { std := 0
+    infinitesimal := 0
+    infinite := 0
+    _pf_infinitesimal_keys_negative := by sorry
+    _pf_infinite_keys_positive := by sorry }
 
 instance : Zero LeviCivitaNum where zero := zero
 
 /-- 1-/
-def one : LeviCivitaNum := {std := 1}
+def one : LeviCivitaNum :=
+  { std := 1
+    infinitesimal := 0
+    infinite := 0
+    _pf_infinitesimal_keys_negative := by sorry
+    _pf_infinite_keys_positive := by sorry }
 instance : One LeviCivitaNum where one := one
 
 instance : Repr LeviCivitaNum where
@@ -317,36 +326,62 @@ instance : Repr LeviCivitaNum where
 
 
 
-def _root_.LeviCivitaNum.ε : LeviCivitaNum := {infinitesimal := ⟨Std.HashMap.singleton (-1) 1⟩}
-def _root_.LeviCivitaNum.H : LeviCivitaNum := {infinite := ⟨Std.HashMap.singleton 1 1⟩}
+def _root_.LeviCivitaNum.ε : LeviCivitaNum :=
+  { std := 0
+    infinitesimal := ⟨Std.HashMap.singleton (-1) 1⟩
+    infinite := 0
+    _pf_infinitesimal_keys_negative := by sorry
+    _pf_infinite_keys_positive := by sorry }
+def _root_.LeviCivitaNum.H : LeviCivitaNum :=
+  { std := 0
+    infinitesimal := 0
+    infinite := ⟨Std.HashMap.singleton 1 1⟩
+    _pf_infinitesimal_keys_negative := by sorry
+    _pf_infinite_keys_positive := by sorry }
 
 instance : Add LeviCivitaNum where
-  add x y := {
-    std := x.std + y.std
-    infinitesimal := x.infinitesimal + y.infinitesimal
-    infinite := x.infinite + y.infinite
-  }
+  add x y :=
+    { std := x.std + y.std
+      infinitesimal := x.infinitesimal + y.infinitesimal
+      infinite := x.infinite + y.infinite
+      _pf_infinitesimal_keys_negative := by sorry
+      _pf_infinite_keys_positive := by sorry }
 
 instance : Neg LeviCivitaNum where
-  neg x := {
-    std := -x.std
-    infinitesimal := -x.infinitesimal
-    infinite := -x.infinite
-  }
+  neg x :=
+    { std := -x.std
+      infinitesimal := -x.infinitesimal
+      infinite := -x.infinite
+      _pf_infinitesimal_keys_negative := by sorry
+      _pf_infinite_keys_positive := by sorry }
 
 instance : Coe Coeff LeviCivitaNum where
-  coe c := {std := c}
+  coe c :=
+    { std := c
+      infinitesimal := 0
+      infinite := 0
+      _pf_infinitesimal_keys_negative := by sorry
+      _pf_infinite_keys_positive := by sorry }
 
 instance : OfNat LeviCivitaNum n where
   ofNat := match n with
     | 0 => zero
     | 1  => one
-    | _ => {std := (((n : Nat) : Int) : Coeff)}
+    | _ =>
+      { std := (((n : Nat) : Int) : Coeff)
+        infinitesimal := 0
+        infinite := 0
+        _pf_infinitesimal_keys_negative := by sorry
+        _pf_infinite_keys_positive := by sorry }
 
 -- Scientific literal support for LeviCivitaNum via its standard part.
 instance : OfScientific LeviCivitaNum where
   ofScientific mantissa exponentSign decimalExponent :=
-    { std := OfScientific.ofScientific mantissa exponentSign decimalExponent }
+    { std := OfScientific.ofScientific mantissa exponentSign decimalExponent
+      infinitesimal := 0
+      infinite := 0
+      _pf_infinitesimal_keys_negative := by sorry
+      _pf_infinite_keys_positive := by sorry }
 
 -- #eval (0 : LeviCivitaNum)
 
@@ -364,9 +399,24 @@ scoped instance [Repr a]: ToString a where toString x := s!"{repr x}"
 
 instance : CoeDep Term t LeviCivitaNum where
   coe :=
-    if t.exp > 0 then { infinite := ⟨Std.HashMap.singleton t.exp t.coeff⟩ : LeviCivitaNum }
-    else if t.exp = 0 then { std := t.coeff }
-    else { infinitesimal := ⟨Std.HashMap.singleton (-t.exp) t.coeff⟩ }
+    if t.exp > 0 then
+      { std := 0
+        infinitesimal := 0
+        infinite := ⟨Std.HashMap.singleton t.exp t.coeff⟩
+        _pf_infinitesimal_keys_negative := by sorry
+        _pf_infinite_keys_positive := by sorry }
+    else if t.exp = 0 then
+      { std := t.coeff
+        infinitesimal := 0
+        infinite := 0
+        _pf_infinitesimal_keys_negative := by sorry
+        _pf_infinite_keys_positive := by sorry }
+    else
+      { std := 0
+        infinitesimal := ⟨Std.HashMap.singleton (-t.exp) t.coeff⟩
+        infinite := 0
+        _pf_infinitesimal_keys_negative := by sorry
+        _pf_infinite_keys_positive := by sorry }
 
 
 def ofArray (l : Array Term) : LeviCivitaNum := Id.run do
@@ -380,7 +430,9 @@ def ofArray (l : Array Term) : LeviCivitaNum := Id.run do
     else
       let existingCoeff := infinitesimal.coeffs.getD term.exp 0
       infinitesimal := ⟨infinitesimal.coeffs.insert term.exp (existingCoeff + term.coeff)⟩
-  return {std, infinitesimal, infinite}
+  return { std, infinitesimal, infinite
+           _pf_infinitesimal_keys_negative := by sorry
+           _pf_infinite_keys_positive := by sorry }
 
 
 -- #eval! LeviCivitaNum.ofArray #[⟨1, 1⟩]
@@ -397,16 +449,26 @@ macro_rules
   | `(lc[-ε]) => `(lc[-1 ε^1])
   | `(lc[H]) => `(LeviCivitaNum.H)
   | `(lc[-H]) => `(lc[-1 H])
-  | `(lc[$coeff:term ε]) => `({infinitesimal := ⟨Std.HashMap.singleton (-1) $coeff⟩ : LeviCivitaNum})
-  | `(lc[$coeff:term H]) => `({infinite := ⟨Std.HashMap.singleton 1 $coeff⟩ : LeviCivitaNum})
+  | `(lc[$coeff:term ε]) => `({ std := 0, infinitesimal := ⟨Std.HashMap.singleton (-1) $coeff⟩, infinite := 0,
+                                 _pf_infinitesimal_keys_negative := by sorry,
+                                 _pf_infinite_keys_positive := by sorry : LeviCivitaNum})
+  | `(lc[$coeff:term H]) => `({ std := 0, infinitesimal := 0, infinite := ⟨Std.HashMap.singleton 1 $coeff⟩,
+                                 _pf_infinitesimal_keys_negative := by sorry,
+                                 _pf_infinite_keys_positive := by sorry : LeviCivitaNum})
   | `(lc[ε^$exp]) => `(lc[1ε^$exp])
   | `(lc[-ε^$exp]) => `(lc[-1ε^$exp])
   | `(lc[H^$exp]) => `(lc[1H^$exp])
   | `(lc[-H^$exp]) => `(lc[-1H^$exp])
-  | `(lc[$coeff:term ε^$exp]) => `({ infinitesimal := ⟨Std.HashMap.singleton (-$exp) $coeff⟩ : LeviCivitaNum})
-  | `(lc[$coeff:term H^$exp]) => `({ infinite := ⟨Std.HashMap.singleton $exp $coeff⟩ : LeviCivitaNum})
+  | `(lc[$coeff:term ε^$exp]) => `({ std := 0, infinitesimal := ⟨Std.HashMap.singleton (-$exp) $coeff⟩, infinite := 0,
+                                      _pf_infinitesimal_keys_negative := by sorry,
+                                      _pf_infinite_keys_positive := by sorry : LeviCivitaNum})
+  | `(lc[$coeff:term H^$exp]) => `({ std := 0, infinitesimal := 0, infinite := ⟨Std.HashMap.singleton $exp $coeff⟩,
+                                      _pf_infinitesimal_keys_negative := by sorry,
+                                      _pf_infinite_keys_positive := by sorry : LeviCivitaNum})
   | `(lc[$x:polyItem, $xs,*]) => `(lc[$x] + lc[$xs,*])
-  | `(lc[$coeff:term]) => `({ std := $coeff : LeviCivitaNum})
+  | `(lc[$coeff:term]) => `({ std := $coeff, infinitesimal := 0, infinite := 0,
+                              _pf_infinitesimal_keys_negative := by sorry,
+                              _pf_infinite_keys_positive := by sorry : LeviCivitaNum})
 
 -- Simple natural-power instance for LeviCivitaNum to support uses like x^n in this file
 -- moved below after Mul instance
@@ -467,7 +529,9 @@ def _root_.Polynomial'.toLC (xs:Polynomial') : LeviCivitaNum := Id.run do
       infinite := ⟨infinite.coeffs.insert exp (coeff)⟩
     else
       infinitesimal := ⟨infinitesimal.coeffs.insert exp (coeff)⟩
-  return {std, infinitesimal, infinite}
+  return { std, infinitesimal, infinite
+           _pf_infinitesimal_keys_negative := by sorry
+           _pf_infinite_keys_positive := by sorry }
 -- parenthesization is fucked
 -- #eval! toString <| p[1, 2ε, 4H, 4H, 3,3ε^2].toLC
 
@@ -483,7 +547,9 @@ def PolynomialG.toLC (xs : PolynomialG Std.Internal.Rat) : LeviCivitaNum := Id.r
       infinite := { coeffs := infinite.coeffs.insert e c }
     else
       infinitesimal := { coeffs := infinitesimal.coeffs.insert e c }
-  { std, infinitesimal, infinite }
+  { std, infinitesimal, infinite
+    _pf_infinitesimal_keys_negative := by sorry
+    _pf_infinite_keys_positive := by sorry }
 
 end LeanInf
 
