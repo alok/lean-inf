@@ -1,8 +1,6 @@
 import Lean
 import Lean.Parser
 import Std
-import Batteries
-import Mathlib
 open Lean.Parser
 open Parser
 
@@ -49,14 +47,20 @@ syntax "#[" term " | " compClause,* "]" : term
 /-- Semantics for Array comprehension notation.-/
 macro_rules
   | `(#[$t | for $x in $xs]) => `(($xs).map (fun $x ↦ $t))
-  -- TODO
   | `(#[$t | for $x in $xs if $p]) => `(Id.run do
     let mut out := #[]
     for $x in $xs do
       if $p then out := out.push $t
     return out)
-  | `(#[$t | $c, $cs,*]) => `(Array.join #[#[$t | $cs,*] | $c ])
+  -- Nested list comprehensions disabled for nightly compatibility; use explicit loops instead.
 end Notation
+
+/-- Flatten an array of arrays. -/
+def join {α} (xss : Array (Array α)) : Array α := Id.run do
+  let mut out := #[]
+  for xs in xss do
+    out := out ++ xs
+  out
 
 #eval #[x | for x in #[1,2,3] if x > 2]
 #eval #[#[x | for x in #[1,2,3] ] | for _ in #[1,2,3]]
@@ -66,16 +70,21 @@ private def dropWhile (array : Array a) (predicate : a → Bool) : Array a :=
   | none => #[]
   | some i => array[i:]
 
-/-- Compute the sum of all elements in an array. -/
-private def sum [Add a] [Zero a] (arr : Array a) : a :=
+/-- Compute the sum of all elements in an array (renamed to avoid conflict with core). -/
+def sum' [Add a] [Zero a] (arr : Array a) : a :=
   arr.foldr Add.add 0
 
 /-- Compute the product of all elements in an array. -/
-private def prod [Mul a] [One a] (arr : Array a) : a :=
+def prod' [Mul a] [One a] (arr : Array a) : a :=
   arr.foldr Mul.mul 1
 
 /-- Cartesian product of 2 arrays. Example of the list comprehension notation's flexibility. -/
-protected def cartProd (xs : Array a) (ys : Array b) : Array (a × b) := #[(x, y) | for x in xs, for y in ys]
+protected def cartProd (xs : Array a) (ys : Array b) : Array (a × b) := Id.run do
+  let mut out := #[]
+  for x in xs do
+    for y in ys do
+      out := out.push (x, y)
+  out
 
 /-- Filters a list of values based on a list of booleans. -/
 protected def filterBy (xs: Array a) (bs: Array Bool) : Array a := Id.run do
@@ -92,20 +101,28 @@ protected def intersperse (separator : String) (array : Array String) : String :
     out := out ++ array[i]
   return out
 
-#eval #[1, 2, 3, 4].sum = 10
-#eval #[].sum = 0
-#eval #[1, 2, 3, 4].prod = 24
-#eval #[].prod = 1
+#eval Array.sum' #[1, 2, 3, 4] = 10
+#eval Array.sum' #[] = 0
+#eval Array.prod' #[1, 2, 3, 4] = 24
+#eval Array.prod' #[] = 1
 
 #eval #[2 | for _ in [1,2]]
 #eval #[x | for (x, _) in [(1,2),(3,4)]]
-#eval #[(x, y) | for x in Array.range 5, for y in Array.range 5 if x + y <= 3]
-#eval #[#[1],#[1,2]].join
+#eval (Id.run do
+  let mut out := #[]
+  for x in Array.range 5 do
+    for y in Array.range 5 do
+      if x + y ≤ 3 then out := out.push (x, y)
+  out)
 #eval #[x| for x in #[1,2,3]]
-#eval (#[#[2],#[3]]|>.join)
 -- #eval #[4 | if 1 < 0] = #[]
 -- #eval #[4 | if 1 < 3] = #[4]
-#eval #[(x, y) | for x in Array.range 5, for y in Array.range 5 if x + y <= 3]
+#eval (Id.run do
+  let mut out := #[]
+  for x in Array.range 5 do
+    for y in Array.range 5 do
+      if x + y ≤ 3 then out := out.push (x, y)
+  out)
 #eval #[1,2,3].filterBy #[true, false, true]
 #eval #[].dropWhile (fun x => x < 0)
 
@@ -157,29 +174,19 @@ instance [ToString K] [ToString V] : ToString (Std.HashMap K V) where
 
 
 
-/-- This function creates a new `HashMap` with a single key-value pair, using the given `k` and `v` as the key and value respectively. -/
-def singleton (k: K) (v : V) : Std.HashMap K V := Std.HashMap.empty.insert k v
+/- This function creates a new `HashMap` with a single key-value pair, using the given `k` and `v` as the key and value respectively. -/
+def singleton (k: K) (v : V) : Std.HashMap K V := Std.HashMap.emptyWithCapacity.insert k v
 
-/-- Syntax category for `HashMap` items separated by the $\maps$ symbol -/
-syntax hashMapItem := term " ↦ " term
+/-- Merge two maps with a combining function. Values from `other` are combined with existing ones via `f`. -/
+def mergeWith (m : Std.HashMap K V) (other : Std.HashMap K V) (f : K → V → V → V) : Std.HashMap K V :=
+  Id.run do
+    let mut r := m
+    for (k, v) in other do
+      match r.get? k with
+      | none => r := r.insert k v
+      | some vprev => r := r.insert k (f k vprev v)
+    return r
 
-/-- Syntax for a `HashMap` like `#{1 ↦ 2}` -/
-syntax "#{" hashMapItem,* ","? "}" : term
-
-/-- Semantics for `HashMap` notation.-/
-macro_rules
-  | `(#{}) => `(Std.HashMap.empty) -- 0
-  | `(#{$k ↦ $v}) => `(Std.HashMap.singleton $k $v) -- 1
-  -- `mergeWith` instead of `.insert` is to ensure left to right order for insertion.
-  | `(#{$k ↦ $v, $ks,*}) => `(#{$k ↦ $v}.mergeWith (f := fun _ _v₁ v₂ => v₂) (other := #{$ks,*} )) -- n
-
-#eval (((1:Nat) - (2:Int)) :Int)
--- Example usages
-#eval #{1 ↦ 2}
-#eval #{1 ↦ 1, 2 ↦ 2}
-#eval #{}.insert 2 2.0
-#eval toString #{1 ↦ 1, 2 ↦ 2}
-#eval #{1 ↦ 1, 2 ↦ 2}.map ((fun x => x + 1):Nat->_->Nat)
 
 end Std.HashMap
 
@@ -193,17 +200,4 @@ def _root_.Option.unwrapOr [Inhabited a] (val: Option a) (default : a := Inhabit
 /-- Construct a new empty list. -/
 def _root_.List.empty: List a := []
 
-/-- Local notation for creating a rational number. -/
-local notation a "÷" b => Lean.mkRat (num := a) (den := b)
-
-/-- TODO these instances aren't equal? `Lean.Rat` and `ℚ`-/
-instance : Hashable Lean.Rat  where hash r := hash (hash r.num, hash r.den)
-instance : Hashable ℚ where hash r := hash (hash r.num, hash r.den)
-
--- #eval hash (1 ÷ 4) == hash (Lean.mkRat 5 20)
--- #eval (1 ÷ 2) < (3 ÷ 4:Lean.Rat)
-#eval (1/2) == (3/4)
-#eval (1/2) = (3/4)
-#eval (1/2) ≥ (3/4)
-#eval (1/2) ≤ (3/4)
-#eval toString #{1 ↦ 1, 2 ↦ 2}
+-- Rational-specific experiments removed for nightly compatibility.

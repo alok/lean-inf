@@ -1,10 +1,9 @@
 import Lake
 open Lake DSL
 
-require mathlib from git "https://github.com/leanprover-community/mathlib4.git"
-require Parser from git "https://github.com/fgdorais/lean4-parser" @ "main"
-require LeanCopilot from git "https://github.com/lean-dojo/LeanCopilot.git" @ "v1.4.1"
-require aesop from git "https://github.com/leanprover-community/aesop"
+-- Keep dependencies minimal while targeting nightly Lean.
+-- mathlib and LeanCopilot are disabled to avoid Lake API incompatibilities.
+-- aesop is also disabled; we avoid using it in proofs for now.
 package "lean-inf" where
   -- add package configuration options here
 

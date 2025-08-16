@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "lean-lsp": {
+      "command": "uvx",
+      "args": ["lean-lsp-mcp"],
+      "env": {},
+      "disabled": false,
+      "alwaysAllow": [
+        {
+          "method": "fileSystem/readFile"
+        },
+        {
+          "method": "fileSystem/readDirectory"
+        }
+      ]
+    }
+  }
+}
+

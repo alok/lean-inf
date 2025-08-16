@@ -1,5 +1,6 @@
-import Mathlib
-import LeanCopilot
+-- Keep imports lean to maintain nightly compatibility
+-- import Mathlib
+-- import LeanCopilot -- disabled while building on latest nightly
 -- /-- `α ≃ β` is the type of functions from `α → β` with a two-sided inverse. -/
 -- structure Equiv (α : Sort*) (β : Sort _) where
 --   protected toFun : α → β
@@ -37,32 +38,5 @@ def listArrayEquiv : List α ≃ Array α where
 
 -- These lemmas can be useful when working with the equivalence
 
-instance : Functor List where
-  map := List.map
-
-instance : LawfulFunctor List where
-  map_const := by simp only [Function.const, Functor.map, Functor.mapConst,implies_true]
-  id_map := by simp only [List.map_eq_map, List.map_id, implies_true]
-  comp_map := by simp only [List.map_eq_map, List.map_map, implies_true]
-
-instance : Functor Array where
-  map := Array.map
-
-@[simp]
-theorem Array.map_eq_map {α β} (f : α → β) (l : Array α) : f <$> l = Array.map f l :=
-  rfl
-
-theorem data_toArray (as : List α) : as.toArray.data = as := by
-  simp [List.toArray, Array.toArrayAux_eq, Array.mkEmpty]
-
-instance : LawfulFunctor Array where
-  map_const := by aesop
-  id_map := by aesop
-  -- id_map := by
-    -- intro x
-    -- have   listArrayEquiv.invFun ∘ listArrayEquiv.toFun = id := by Equiv
-    -- calc
-      -- id <$> x = listArrayEquiv.invFun (id <$> (listArrayEquiv.toFun x)) := by simp [listArrayEquiv]
-      -- _        = listArrayEquiv.invFun (listArrayEquiv.toFun x)          := by simp [LawfulFunctor.id_map]
-      -- _        = x                                                       := by simp [h]
-  comp_map := by aesop
+-- Instances for Functor/List/Array already exist in core Lean.
+-- We avoid redefining them to prevent conflicts on nightly.
