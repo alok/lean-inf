@@ -306,6 +306,16 @@ def mkParts (std : Coeff) (infinitesimal infinite : Polynomial') : LeviCivitaNum
     _pf_infinitesimal_keys_negative := by sorry
     _pf_infinite_keys_positive := by sorry }
 
+def mkStd (c : Coeff) : LeviCivitaNum := mkParts c 0 0
+def mkInf (e : Exponent) (c : Coeff) (h : e < 0) : LeviCivitaNum := mkParts 0 ⟨Std.HashMap.singleton e c⟩ 0
+def mkInfPos (e : Exponent) (c : Coeff) (h : e > 0) : LeviCivitaNum := mkParts 0 0 ⟨Std.HashMap.singleton e c⟩
+
+def insertInfinitesimal (x : LeviCivitaNum) (e : Exponent) (c : Coeff) (h : e < 0) : LeviCivitaNum :=
+  mkParts x.std ⟨x.infinitesimal.coeffs.insert e c⟩ x.infinite
+
+def insertInfinite (x : LeviCivitaNum) (e : Exponent) (c : Coeff) (h : e > 0) : LeviCivitaNum :=
+  mkParts x.std x.infinitesimal ⟨x.infinite.coeffs.insert e c⟩
+
 
 
 
