@@ -41,6 +41,21 @@ theorem all_pos_merge
   : (Std.HashMap.mergeWith a b f).all (fun e _ => decide (e > 0)) = true := by
   sorry
 
+-- Specialized merges used in code: combining coefficients by addition
+theorem all_neg_merge_add
+    (a b : Std.HashMap Exponent Coeff)
+    (ha : a.all (fun e _ => decide (e < 0)) = true)
+    (hb : b.all (fun e _ => decide (e < 0)) = true)
+  : (Std.HashMap.mergeWith a b (fun _ x y => x + y)).all (fun e _ => decide (e < 0)) = true := by
+  sorry
+
+theorem all_pos_merge_add
+    (a b : Std.HashMap Exponent Coeff)
+    (ha : a.all (fun e _ => decide (e > 0)) = true)
+    (hb : b.all (fun e _ => decide (e > 0)) = true)
+  : (Std.HashMap.mergeWith a b (fun _ x y => x + y)).all (fun e _ => decide (e > 0)) = true := by
+  sorry
+
 -- Mapping values does not affect key-based invariants
 theorem all_neg_map_values
     (m : Std.HashMap Exponent Coeff)
