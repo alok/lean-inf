@@ -4,6 +4,7 @@ import LeanInf.Basic
 import LeanInf.CoeffLike
 -- import LeanInf.SignLemmas -- proofs deferred
 import LeanInf.PolyGeneric
+import LeanInf.LCBuilders
 import LeanInf.Expect
 -- import LeanInf.LCGeneric -- generic LC structure WIP
 

@@ -1,4 +1,5 @@
 import LeanInf.PolyGeneric
+import LeanInf.LCBuilders
 
 namespace LeanInf.Expect
 open LeanInf
@@ -33,3 +34,16 @@ def mono (e : ExpG) (c : Rat) : PolynomialG Rat :=
 #check (LeviCivitaNum.mkStd (1 : Rat))
 
 end LeanInf.Expect
+
+namespace LeanInf.ExpectLC
+open LeanInf LeviCivitaNum
+
+abbrev Rat := Std.Internal.Rat
+
+-- Build LC safely using proved helper (still depends on lemma stubs; no #eval yet)
+#check (LeviCivitaNum.insertInfinitesimalP (mkStd (1 : Rat)) (-1) (2 : Rat) (by
+  -- bold assumption: negative exponent proof via arithmetic
+  have : (-1 : Rat) < 0 := by decide
+  simpa using this))
+
+end LeanInf.ExpectLC
