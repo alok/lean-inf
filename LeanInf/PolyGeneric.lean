@@ -94,7 +94,8 @@ instance [ToString α] [BEq α] [Zero α] : ToString (PolynomialG α) where
         s!"{t.coeff}{u}{e}"
     )
     let parts := strs.toList
-    parts.foldl (fun acc s => if acc = "" then s else acc ++ " + " ++ s) ""
+    if parts.isEmpty then "0"
+    else parts.foldl (fun acc s => if acc = "" then s else acc ++ " + " ++ s) ""
 
 end PolynomialG
 
