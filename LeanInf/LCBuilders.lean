@@ -31,3 +31,19 @@ def negP (x : LeviCivitaNum) : LeviCivitaNum :=
 
 end LeviCivitaNum
 
+namespace LeviCivitaNum
+
+/-- Proven addition via mergeWith + lemma stubs for invariants. -/
+def addP (x y : LeviCivitaNum) : LeviCivitaNum :=
+  { std := x.std + y.std
+    infinitesimal := { coeffs := Std.HashMap.mergeWith x.infinitesimal.coeffs y.infinitesimal.coeffs (fun _ a b => a + b) }
+    infinite      := { coeffs := Std.HashMap.mergeWith x.infinite.coeffs      y.infinite.coeffs      (fun _ a b => a + b) }
+    _pf_infinitesimal_keys_negative :=
+      LeanInf.all_neg_merge_add x.infinitesimal.coeffs y.infinitesimal.coeffs x._pf_infinitesimal_keys_negative y._pf_infinitesimal_keys_negative
+    _pf_infinite_keys_positive :=
+      LeanInf.all_pos_merge_add x.infinite.coeffs y.infinite.coeffs x._pf_infinite_keys_positive y._pf_infinite_keys_positive }
+
+/-- Proven subtraction via addP and negP. -/
+def subP (x y : LeviCivitaNum) : LeviCivitaNum := addP x (negP y)
+
+end LeviCivitaNum

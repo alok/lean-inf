@@ -46,4 +46,8 @@ abbrev Rat := Std.Internal.Rat
   have : (-1 : Rat) < 0 := by decide
   simpa using this))
 
+-- Check add/sub proven wrappers typecheck
+#check (LeviCivitaNum.addP (mkStd (1 : Rat)) (mkStd (2 : Rat)))
+#check (LeviCivitaNum.subP (mkStd (5 : Rat)) (mkStd (3 : Rat)))
+
 end LeanInf.ExpectLC
