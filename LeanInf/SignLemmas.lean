@@ -41,6 +41,21 @@ theorem all_pos_merge
   : (Std.HashMap.mergeWith a b f).all (fun e _ => decide (e > 0)) = true := by
   sorry
 
+-- Mapping values does not affect key-based invariants
+theorem all_neg_map_values
+    (m : Std.HashMap Exponent Coeff)
+    (h_all : m.all (fun e _ => decide (e < 0)) = true)
+    (g : Coeff → Coeff)
+  : (m.map (fun _ v => g v)).all (fun e _ => decide (e < 0)) = true := by
+  sorry
+
+theorem all_pos_map_values
+    (m : Std.HashMap Exponent Coeff)
+    (h_all : m.all (fun e _ => decide (e > 0)) = true)
+    (g : Coeff → Coeff)
+  : (m.map (fun _ v => g v)).all (fun e _ => decide (e > 0)) = true := by
+  sorry
+
 -- Sign preservation at the LC level (skeletons)
 theorem sign_preserved_by_infinitesimal_insert
     (x : LeviCivitaNum)

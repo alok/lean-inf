@@ -20,5 +20,10 @@ def mono (e : ExpG) (c : Rat) : PolynomialG Rat :=
 -- Mixed exponents: expect both H and ε units to appear
 #eval toString (mono 1 (2 : Rat) + mono (-1) (3 : Rat))
 
-end LeanInf.Expect
+-- Expect: H * ε = constant term
+#eval toString ((mono 1 (2 : Rat)) * (mono (-1) (3 : Rat)))
 
+-- Expect: cancellation at same exponent yields 0 (due to normalize)
+#eval toString ((mono 2 (1 : Rat)) + (mono 2 (-1 : Rat)))
+
+end LeanInf.Expect
