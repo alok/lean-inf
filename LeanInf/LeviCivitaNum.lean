@@ -8,6 +8,7 @@ abbrev Exponent := Std.Internal.Rat
 abbrev Coeff := Std.Internal.Rat
 abbrev Term := LeanInf.TermG Std.Internal.Rat
 abbrev CoeffMap := LeanInf.CoeffMapG Std.Internal.Rat
+abbrev Polynomial := LeanInf.PolynomialG Std.Internal.Rat
 
 -- Hashable instance for Exponent provided in LeanInf.CoeffLike
 
@@ -27,18 +28,8 @@ instance : Inv Coeff where
 
 -- Term/CoeffMap now use generic definitions from PolyGeneric.
 
-/-- A polynomial, represented as a `HashMap` from exponents to coefficients -/
-structure Polynomial' where
-  coeffs : CoeffMap := default
-deriving Repr, Inhabited
-
-def CoeffMap.toTerms (m : CoeffMap) : Array Term := Id.run do
-  let mut terms := Array.mkEmpty m.size
-  for (exp, coeff) in m do
-    terms := terms.push { coeff := coeff, exp := exp }
-  return terms
-
-def Polynomial'.toTerms (p : Polynomial') : Array Term := p.coeffs.toTerms
+-- A polynomial, represented as a `HashMap` from exponents to coefficients
+-- Use generic PolynomialG Rat as our polynomial representation
 namespace Format
 
 private def digitToSuperscript (c : Char) : Char :=
@@ -65,22 +56,8 @@ instance : LE Term where le x y := x.exp ≤ y.exp
 private def sortTerms (terms : Array Term) : Array Term :=
   terms.qsort (fun a b => a.exp < b.exp)
 
-instance : ToString Polynomial' where
-  toString p := Id.run do
-    let terms := p.toTerms
-      |> sortTerms
-      |>.filter (fun {coeff, ..} => coeff != 0)  -- Filter out zero terms
-      |>.map fun {exp, coeff} =>
-        match exp with
-        | 0 => s!"{coeff}"
-        | 1 => s!"{coeff}H"
-        | -1 => s!"{coeff}ε"
-        | exp =>
-            let unit := if exp > 0 then "H" else "ε"
-            let exp := Format.toSuperscript (toString (if exp > 0 then exp else -exp))
-            s!"{coeff}{unit}{exp}"
-    let nonZeroTerms := terms.filter (· ≠ "0")  -- Remove "0" terms
-    return if nonZeroTerms.isEmpty then "0" else nonZeroTerms.intersperse " + "
+-- Keep pretty formatting helpers for LC printing; generic PolynomialG has its own ToString
+-- (legacy Polynomial' pretty-printer removed)
 
 -- #eval Format.toSuperscript s!"{-1}"
 
@@ -99,67 +76,22 @@ instance : ToString Term where
 -- #eval (1:Nat) - (2:Nat)
 -- #eval Float.sqrt (2/3:Float)
 
-namespace Polynomial'
-
-/-- Two polynomials are equal iff their coefficients are equal. -/
-instance : BEq Polynomial' where
-  beq p q :=
-    -- remove zeros so empty polynomials are handled
-    let p' := p.coeffs.filter (fun _ v => v != 0)
-    let q' := q.coeffs.filter (fun _ v => v != 0)
-    p' == q'
-
-/-- Add two polynomials by adding their coefficients together -/
-instance : Add Polynomial' where
-  add p q := Id.run do
-    let mut result := p.coeffs
-    for (exp, coeff) in q.coeffs do
-      let existingCoeff := result.getD exp 0
-      result := result.insert exp (existingCoeff + coeff)
-    return ⟨result⟩
-
-/-- Negates a polynomial by negating its coefficients -/
-instance : Neg Polynomial' where neg p := ⟨p.coeffs.map (fun _ coeff => -coeff)⟩
-
--- sample eval for polynomial addition
--- #eval (Polynomial'.mk (coeffs := (Std.HashMap.singleton (0:Exponent) (1:Coeff)).insert 1 2))
-    + (Polynomial'.mk (coeffs := (Std.HashMap.singleton (-1:Exponent) (1:Coeff)).insert 1 2))
-
-/-- The empty polynomial, that is, the constant `0`. -/
-def empty : Polynomial' := ⟨Std.HashMap.emptyWithCapacity⟩
-
-/--  TODO: bad idea? Any real number can be represented as a polynomial with a single term. By the way, this also uses that 0^0 is 1 (since the constant term is x^0) -/
-instance : Coe Coeff Polynomial' where
-  coe c := ⟨Std.HashMap.singleton 0 c⟩
--- #eval ((2:Coeff) : Polynomial')+((2:Coeff) : Polynomial')
-/-- Create a `Polynomial'` from a natural 'iiiinttcsdgh'ber -/
-instance : OfNat Polynomial' n where ofNat := match n with
-  | 0 => Polynomial'.empty
-  | 1 => ⟨Std.HashMap.singleton 0 1⟩
-  | _ => ⟨Std.HashMap.singleton 0 (((n : Nat) : Int) : Coeff)⟩
-
--- #eval ((2 : Polynomial')+(2 : Polynomial'))
--- For decimal and scientific numbers (e.g., `1.23`, `3.12e10`).
-instance : OfScientific Polynomial' where
-  ofScientific mantissa exponentSign decimalExponent :=
-    ⟨Std.HashMap.singleton 0 (OfScientific.ofScientific mantissa exponentSign decimalExponent)⟩
--- Scientific numeric literal support omitted for nightly compatibility.
+namespace LeanInf.Poly
 
 /--Compute the sign of a term (-1, 0, 1). -/
 def signum (x: Term) : Int :=
   if x.coeff > 0 then 1 else if x.coeff < 0 then -1 else 0
 
 
--- #eval Polynomial'.empty
--- #eval (1 : Polynomial') == (⟨Std.HashMap.singleton 0 1⟩ : Polynomial')
+-- (legacy Polynomial' evals removed)
 
-/-- Create a `Polynomial'` from a list of tuples -/
-def ofList (l : List Term) : Polynomial' := Id.run do
+/- Create a polynomial from a list of terms -/
+def ofList (l : List Term) : Polynomial := Id.run do
   let mut result : CoeffMap := Std.HashMap.emptyWithCapacity
   for term in l do
     let existingCoeff := result.getD term.exp 0
     result := result.insert term.exp (existingCoeff + term.coeff)
-  return ⟨result⟩
+  return { coeffs := result }
 
 
 
@@ -211,52 +143,45 @@ syntax "p[" polyItem,* "]" : term
 
 /--Semantics for polynomial notation.-/
 macro_rules
-  | `(p[]) => `(Polynomial'.empty)
-  | `(p[ε]) => `(Polynomial'.mk (coeffs := Std.HashMap.singleton (-1) 1))
-  | `(p[-ε]) => `(Polynomial'.mk (coeffs := Std.HashMap.singleton (-1) (-1)))
-  | `(p[H]) => `(Polynomial'.mk (coeffs := Std.HashMap.singleton 1 1))
-  | `(p[-H]) => `(Polynomial'.mk (coeffs := Std.HashMap.singleton 1 (-1)))
-  | `(p[$coeff:term ε]) => `(Polynomial'.mk (coeffs := Std.HashMap.singleton (-1) $coeff))
-  | `(p[$coeff:term H]) => `(Polynomial'.mk (coeffs := Std.HashMap.singleton 1 $coeff))
+  | `(p[]) => `(( { coeffs := (Std.HashMap.emptyWithCapacity : CoeffMap) } : Polynomial))
+  | `(p[ε]) => `(( { coeffs := Std.HashMap.singleton (-1) (1 : Coeff) } : Polynomial))
+  | `(p[-ε]) => `(( { coeffs := Std.HashMap.singleton (-1) ((-1) : Coeff) } : Polynomial))
+  | `(p[H]) => `(( { coeffs := Std.HashMap.singleton (1 : Exponent) (1 : Coeff) } : Polynomial))
+  | `(p[-H]) => `(( { coeffs := Std.HashMap.singleton (1 : Exponent) ((-1) : Coeff) } : Polynomial))
+  | `(p[$coeff:term ε]) => `(( { coeffs := Std.HashMap.singleton (-1) ($coeff : Coeff) } : Polynomial))
+  | `(p[$coeff:term H]) => `(( { coeffs := Std.HashMap.singleton (1 : Exponent) ($coeff : Coeff) } : Polynomial))
   | `(p[ε^$exp]) => `(p[1ε^$exp])
   | `(p[-ε^$exp]) => `(p[-1ε^$exp])
   | `(p[H^$exp]) => `(p[1H^$exp])
   | `(p[-H^$exp]) => `(p[-1H^$exp])
-  | `(p[$coeff:term ε^$exp]) => `(Polynomial'.mk (coeffs := Std.HashMap.singleton (-$exp) $coeff))
-  | `(p[$coeff:term H^$exp]) => `(Polynomial'.mk (coeffs := Std.HashMap.singleton $exp $coeff))
+  | `(p[$coeff:term ε^$exp]) => `(( { coeffs := Std.HashMap.singleton (-(($exp : Exponent))) ($coeff : Coeff) } : Polynomial))
+  | `(p[$coeff:term H^$exp]) => `(( { coeffs := Std.HashMap.singleton (($exp : Exponent)) ($coeff : Coeff) } : Polynomial))
   | `(p[$x:polyItem, $xs,*]) => `(p[$x] + p[$xs,*])
-  | `(p[$coeff:term]) => `(Polynomial'.mk (coeffs := Std.HashMap.singleton 0 $coeff))
+  | `(p[$coeff:term]) => `(( { coeffs := Std.HashMap.singleton (0 : Exponent) ($coeff : Coeff) } : Polynomial))
 
--- #eval toString <| p[]
--- #eval toString <| p[ε]
--- #eval toString <| p[-ε]
--- #eval toString <| p[H]
--- #eval toString <| p[-H]
--- #eval toString <| p[-3H^3]
--- #eval toString <| p[-ε^3]
--- #eval toString <| p[1ε]
--- #eval toString <| p[1ε, 3H]
+-- Selected sanity checks for polynomial notation/printing (non-bang)
+#eval toString <| p[]
+#eval toString <| p[ε]
+#eval toString <| p[-ε]
+#eval toString <| p[H]
+#eval toString <| p[-H]
+#eval toString <| p[-3H^3]
+#eval toString <| p[-ε^3]
+#eval toString <| p[1ε]
+#eval toString <| p[1ε, 3H]
 -- #eval Id.run do
 --   let x := 2
 --   (p[x ε], p[4*x ε^2])
 -- #eval  p[1, 2 ε, 3ε^2]
 
 end Notation
-end Polynomial'
+end Poly
 
 -- #eval toString <| p[ 2ε, 3ε^2, 0 ε] + p[ 2ε, 3ε^2,4H^2]
 -- #eval p[0 ε].coeffs.toArray.filter (fun (_, coeff) => coeff != 0)
 
-instance : Mul Polynomial' where
-  mul p q := Id.run do
-    let mut result := Polynomial'.empty
-    for (expP, coeffP) in p.coeffs do
-      for (expQ, coeffQ) in q.coeffs do
-        let term := ⟨(Std.HashMap.singleton (expP + expQ) (coeffP * coeffQ))⟩
-        result := result + term
-    return result
-
--- #eval toString (Polynomial'.mk (coeffs := (Std.HashMap.singleton (2:Exponent) (1:Coeff)).insert (-1) 3 |>.insert 0 1))  -- sample
+-- Multiplication is provided by generic PolynomialG; keep a sample using p[...]
+-- #eval toString (p[H^2, -3ε, 1])
 
 -- TODO use polynomial repr instead of raw hashmaps
 
@@ -268,9 +193,9 @@ instance : Mul Polynomial' where
 structure LeviCivitaNum where
   std : Coeff := 0
   /--infinitesimal part-/
-  infinitesimal : Polynomial' := 0
+  infinitesimal : Polynomial := 0
 
-  infinite : Polynomial' := 0
+  infinite : Polynomial := 0
 
   -- Invariants: ensure key signs match the intended part (ε: negative exponents, H: positive).
   _pf_infinitesimal_keys_negative :
@@ -278,15 +203,9 @@ structure LeviCivitaNum where
   _pf_infinite_keys_positive :
     infinite.coeffs.all (fun exp _ => decide (exp > 0)) = true
 deriving Repr
-def LeviCivitaNum.toPoly (x: LeviCivitaNum) : Polynomial' := Id.run do
-  -- concat underlying hashmaps
-  let mut out := x.infinite.coeffs
-  out := Std.HashMap.mergeWith out x.infinitesimal.coeffs (fun _ vself vother => vself + vother)
-  out := out.insert 0 x.std
-  return ⟨out⟩
-
-def LeviCivitaNum.toPolyG (x : LeviCivitaNum) : LeanInf.PolynomialG Std.Internal.Rat := Id.run do
-  let mut out : LeanInf.CoeffMapG Std.Internal.Rat := Std.HashMap.emptyWithCapacity
+-- Combine parts into a generic polynomial
+def LeviCivitaNum.toPolyG (x : LeviCivitaNum) : Polynomial := Id.run do
+  let mut out : CoeffMap := Std.HashMap.emptyWithCapacity
   -- merge infinite and infinitesimal, then std
   for (e, c) in x.infinite.coeffs do
     out := out.insert e c
@@ -296,25 +215,27 @@ def LeviCivitaNum.toPolyG (x : LeviCivitaNum) : LeanInf.PolynomialG Std.Internal
   out := out.insert 0 x.std
   { coeffs := out }
 
+-- (removed duplicate toPolyG)
+
 instance : BEq LeviCivitaNum where
   beq x y := x.std == y.std && x.infinitesimal == y.infinitesimal && x.infinite == y.infinite
 
 namespace LeviCivitaNum
 
-def mkParts (std : Coeff) (infinitesimal infinite : Polynomial') : LeviCivitaNum :=
+def mkParts (std : Coeff) (infinitesimal infinite : Polynomial) : LeviCivitaNum :=
   { std, infinitesimal, infinite
     _pf_infinitesimal_keys_negative := by sorry
     _pf_infinite_keys_positive := by sorry }
 
 def mkStd (c : Coeff) : LeviCivitaNum := mkParts c 0 0
-def mkInf (e : Exponent) (c : Coeff) (_h : e < 0) : LeviCivitaNum := mkParts 0 ⟨Std.HashMap.singleton e c⟩ 0
-def mkInfPos (e : Exponent) (c : Coeff) (_h : e > 0) : LeviCivitaNum := mkParts 0 0 ⟨Std.HashMap.singleton e c⟩
+def mkInf (e : Exponent) (c : Coeff) (_h : e < 0) : LeviCivitaNum := mkParts 0 { coeffs := Std.HashMap.singleton e c } 0
+def mkInfPos (e : Exponent) (c : Coeff) (_h : e > 0) : LeviCivitaNum := mkParts 0 0 { coeffs := Std.HashMap.singleton e c }
 
 def insertInfinitesimal (x : LeviCivitaNum) (e : Exponent) (c : Coeff) (_h : e < 0) : LeviCivitaNum :=
-  mkParts x.std ⟨x.infinitesimal.coeffs.insert e c⟩ x.infinite
+  mkParts x.std { coeffs := x.infinitesimal.coeffs.insert e c } x.infinite
 
 def insertInfinite (x : LeviCivitaNum) (e : Exponent) (c : Coeff) (_h : e > 0) : LeviCivitaNum :=
-  mkParts x.std x.infinitesimal ⟨x.infinite.coeffs.insert e c⟩
+  mkParts x.std x.infinitesimal { coeffs := x.infinite.coeffs.insert e c }
 
 
 
@@ -333,8 +254,8 @@ instance : Repr LeviCivitaNum where
 
 
 
-def _root_.LeviCivitaNum.ε : LeviCivitaNum := mkParts 0 ⟨Std.HashMap.singleton (-1) 1⟩ 0
-def _root_.LeviCivitaNum.H : LeviCivitaNum := mkParts 0 0 ⟨Std.HashMap.singleton 1 1⟩
+def _root_.LeviCivitaNum.ε : LeviCivitaNum := mkParts 0 { coeffs := Std.HashMap.singleton (-1) (1 : Coeff) } 0
+def _root_.LeviCivitaNum.H : LeviCivitaNum := mkParts 0 0 { coeffs := Std.HashMap.singleton (1 : Exponent) (1 : Coeff) }
 
 instance : Add LeviCivitaNum where
   add x y := mkParts (x.std + y.std) (x.infinitesimal + y.infinitesimal) (x.infinite + y.infinite)
@@ -372,22 +293,22 @@ scoped instance [Repr a]: ToString a where toString x := s!"{repr x}"
 
 instance : CoeDep Term t LeviCivitaNum where
   coe :=
-    if t.exp > 0 then mkParts 0 0 ⟨Std.HashMap.singleton t.exp t.coeff⟩
+    if t.exp > 0 then mkParts 0 0 { coeffs := Std.HashMap.singleton t.exp t.coeff }
     else if t.exp = 0 then mkParts t.coeff 0 0
-    else mkParts 0 ⟨Std.HashMap.singleton (-t.exp) t.coeff⟩ 0
+    else mkParts 0 { coeffs := Std.HashMap.singleton (-t.exp) t.coeff } 0
 
 
 def ofArray (l : Array Term) : LeviCivitaNum := Id.run do
-  let mut (std, infinitesimal, infinite) := (0, Polynomial'.empty, Polynomial'.empty)
+  let mut (std, infinitesimal, infinite) := (0, (LeanInf.PolynomialG.empty : Polynomial), (LeanInf.PolynomialG.empty : Polynomial))
   for term in l do
     if term.exp == 0 then
       std := std + term.coeff
     else if term.exp > 0 then
       let existingCoeff := infinite.coeffs.getD term.exp 0
-      infinite := ⟨infinite.coeffs.insert term.exp (existingCoeff + term.coeff)⟩
+      infinite := { coeffs := infinite.coeffs.insert term.exp (existingCoeff + term.coeff) }
     else
       let existingCoeff := infinitesimal.coeffs.getD term.exp 0
-      infinitesimal := ⟨infinitesimal.coeffs.insert term.exp (existingCoeff + term.coeff)⟩
+      infinitesimal := { coeffs := infinitesimal.coeffs.insert term.exp (existingCoeff + term.coeff) }
   return mkParts std infinitesimal infinite
 
 
@@ -405,86 +326,42 @@ macro_rules
   | `(lc[-ε]) => `(lc[-1 ε^1])
   | `(lc[H]) => `(LeviCivitaNum.H)
   | `(lc[-H]) => `(lc[-1 H])
-  | `(lc[$coeff:term ε]) => `(LeviCivitaNum.mkParts 0 ⟨Std.HashMap.singleton (-1) $coeff⟩ 0)
-  | `(lc[$coeff:term H]) => `(LeviCivitaNum.mkParts 0 0 ⟨Std.HashMap.singleton 1 $coeff⟩)
+  | `(lc[$coeff:term ε]) => `(LeviCivitaNum.mkParts 0 { coeffs := Std.HashMap.singleton (-1) ($coeff : Coeff) } 0)
+  | `(lc[$coeff:term H]) => `(LeviCivitaNum.mkParts 0 0 { coeffs := Std.HashMap.singleton (1 : Exponent) ($coeff : Coeff) })
   | `(lc[ε^$exp]) => `(lc[1ε^$exp])
   | `(lc[-ε^$exp]) => `(lc[-1ε^$exp])
   | `(lc[H^$exp]) => `(lc[1H^$exp])
   | `(lc[-H^$exp]) => `(lc[-1H^$exp])
-  | `(lc[$coeff:term ε^$exp]) => `(LeviCivitaNum.mkParts 0 ⟨Std.HashMap.singleton (-$exp) $coeff⟩ 0)
-  | `(lc[$coeff:term H^$exp]) => `(LeviCivitaNum.mkParts 0 0 ⟨Std.HashMap.singleton $exp $coeff⟩)
+  | `(lc[$coeff:term ε^$exp]) => `(LeviCivitaNum.mkParts 0 { coeffs := Std.HashMap.singleton (-(($exp : Exponent))) ($coeff : Coeff) } 0)
+  | `(lc[$coeff:term H^$exp]) => `(LeviCivitaNum.mkParts 0 0 { coeffs := Std.HashMap.singleton (($exp : Exponent)) ($coeff : Coeff) })
   | `(lc[$x:polyItem, $xs,*]) => `(lc[$x] + lc[$xs,*])
   | `(lc[$coeff:term]) => `(LeviCivitaNum.mkParts $coeff 0 0)
 
 -- Simple natural-power instance for LeviCivitaNum to support uses like x^n in this file
 -- moved below after Mul instance
 
--- #eval! lc[]
--- #eval! lc[1ε]
--- #eval! lc[3ε]
--- #eval! lc[ε]
--- #eval! lc[-ε]
--- #eval! lc[-H]
--- #eval! lc[ε^2]
--- #eval! lc[ε^2, H^2]
--- #eval! lc[1ε, 2H]
+-- Levi-Civita literal checks left disabled; macros rely on mkParts which uses sorry
+-- #eval lc[]
+-- #eval lc[1ε]
+-- #eval lc[3ε]
+-- #eval lc[ε]
+-- #eval lc[-ε]
+-- #eval lc[-H]
+-- #eval lc[ε^2]
+-- #eval lc[ε^2, H^2]
+-- #eval lc[1ε, 2H]
 
-open Format in
 instance : ToString LeviCivitaNum where
-  toString x := Id.run do
-    let mut terms := #[]
-    -- Add infinite terms
-    let infiniteTerms := sortTerms (x.infinite.toTerms)
-      |>.filter (fun {coeff, ..} => coeff != 0)  -- Filter out zero terms
-      |>.map fun {exp, coeff} =>
-        match exp with
-        | 1 => s!"{coeff}H"
-        | 0 => s!"{coeff}"
-        | -1 => s!"{coeff}H⁻¹"
-        | _ =>
-          let unit := "H"
-          let exp := toSuperscript (toString exp)
-          s!"{coeff}{unit}{exp}"
-    terms := terms.append infiniteTerms
-    -- Add standard part if non-zero
-    if x.std != 0 then
-      terms := terms.push s!"{x.std}"
-    -- Add infinitesimal terms
-    let infinitesimalTerms := sortTerms (x.infinitesimal.toTerms)
-      |>.filter (fun {coeff, ..} => coeff != 0)  -- Filter out zero terms
-      |>.map fun {exp, coeff} =>
-        match exp with
-        | 0 => s!"{coeff}"
-        | -1 => s!"{coeff}ε"
-        | _ =>
-          let unit := "ε"
-          let exp := toSuperscript (toString (-exp))
-          s!"{coeff}{unit}{exp}"
-    terms := terms.append infinitesimalTerms
-    -- Combine all terms
-    let result := terms.intersperse " + "
-    return if result.isEmpty then "0" else result
+  toString x := toString (x.toPolyG)
 
-/-- Convert a polynomial to a `LeviCivitaNum` -/
-def _root_.Polynomial'.toLC (xs:Polynomial') : LeviCivitaNum := Id.run do
-  let mut (std, infinitesimal, infinite) := (0, Polynomial'.empty, Polynomial'.empty)
-  for {exp, coeff} in xs.toTerms do
-    if exp == 0 then
-      std := std + coeff
-    else if exp > 0 then
-      infinite := ⟨infinite.coeffs.insert exp (coeff)⟩
-    else
-      infinitesimal := ⟨infinitesimal.coeffs.insert exp (coeff)⟩
-  return mkParts std infinitesimal infinite
--- parenthesization is fucked
--- #eval! toString <| p[1, 2ε, 4H, 4H, 3,3ε^2].toLC
+-- (legacy Polynomial'.toLC removed; use LeanInf.PolynomialG.toLC)
 
 namespace LeanInf
 
 def PolynomialG.toLC (xs : PolynomialG Std.Internal.Rat) : LeviCivitaNum := Id.run do
   let mut std : Std.Internal.Rat := 0
-  let mut infinitesimal : Polynomial' := Polynomial'.empty
-  let mut infinite : Polynomial' := Polynomial'.empty
+  let mut infinitesimal : Polynomial := (LeanInf.PolynomialG.empty : Polynomial)
+  let mut infinite : Polynomial := (LeanInf.PolynomialG.empty : Polynomial)
   for (e, c) in xs.coeffs do
     if e == 0 then std := std + c
     else if e > 0 then
@@ -513,15 +390,15 @@ instance : HPow LeviCivitaNum Nat LeviCivitaNum where
       k := k - 1
     acc
 
-instance : Sub Polynomial' where
-  sub x y := x + (-y)
+-- Sub for polynomials is provided by generic PolynomialG
 
 
--- #eval! lc[ε]*lc[H,ε,H^2]
--- #eval! lc[-ε, ε, H] * lc[-ε,  ε, H]
--- #eval! lc[-ε^2,2ε^3] * lc[ε, 3H]
--- #eval! lc[ε^2, 3ε^4] * lc[ε, 3H]
--- #eval! 0 - p[5H]
+-- Multiplication checks disabled; LC paths depend on sorry. Keep polynomial sample.
+-- #eval lc[ε]*lc[H,ε,H^2]
+-- #eval lc[-ε, ε, H] * lc[-ε,  ε, H]
+-- #eval lc[-ε^2,2ε^3] * lc[ε, 3H]
+-- #eval lc[ε^2, 3ε^4] * lc[ε, 3H]
+#eval 0 - p[5H]
 
 -- #eval 2.0 > 3.4
 #synth LE Coeff
@@ -529,12 +406,11 @@ instance : Sub Polynomial' where
 /-- check if the number is a standard number. TODO is 0 a standard number?-/
 def isStd (x: LeviCivitaNum) : Bool := x.infinite == 0 && x.infinitesimal == 0
 
--- #eval! lc[ε]
--- #eval! lc[ε].isStd
--- #eval! lc[ε^2].isStd
--- #eval! lc[ε^2, H].isStd
--- #eval! lc[ε^2, H].isStd
--- #eval! lc[ε^2, H].isStd
+-- isStd checks disabled; lc[...] relies on sorry invariants
+-- #eval lc[ε]
+-- #eval lc[ε].isStd
+-- #eval lc[ε^2].isStd
+-- #eval lc[ε^2, H].isStd
 
 /-- Compute the sign of a Levi-Civita number. -/
 def signum (x: LeviCivitaNum) : Int :=
@@ -544,12 +420,13 @@ def signum (x: LeviCivitaNum) : Int :=
   | some (_, coeff) => if coeff > 0 then 1 else -1
   | none => 0
 
--- #eval! lc[1, H, -H^2].signum  -- Should be -1
--- #eval! lc[-ε,H,ε,H,-H^2, H^5].signum  -- Should be -1
--- #eval! lc[ε].signum  -- Should be 1
--- #eval! lc[-H,ε].signum  -- Should be -1
--- #eval! lc[-ε,H].signum  -- Should be 1
--- #eval! lc[-2,ε,H].signum  -- Should be 1
+-- signum checks disabled; lc[...] relies on sorry invariants
+-- #eval lc[1, H, -H^2].signum
+-- #eval lc[-ε,H,ε,H,-H^2, H^5].signum
+-- #eval lc[ε].signum
+-- #eval lc[-H,ε].signum
+-- #eval lc[-ε,H].signum
+-- #eval lc[-2,ε,H].signum
 
 -- Add this instance before the DecidableRel instance
 instance : LT LeviCivitaNum where
@@ -627,10 +504,6 @@ def purePart (x: LeviCivitaNum) (_h : isPure x = true ) : Term :=
 /-- Division of terms.-/
 instance : Div Term where div x y := {exp := x.exp - y.exp, coeff := x.coeff / y.coeff}
 instance : Inv Term where inv x := {exp := -x.exp, coeff := x.coeff⁻¹}
-/--TODO add test cases-/
-instance : LT Term where lt x y := x.exp < y.exp && x.coeff < y.coeff
-/--TODO add test cases-/
-instance : LE Term where le x y := x.exp ≤ y.exp && x.coeff ≤ y.coeff
 
 /-- Embeds a natural number into a term by `n * H^0 = n` -/
 instance : OfNat Term n where ofNat := {coeff := (((n : Nat) : Int) : Coeff), exp := 0}
@@ -647,7 +520,7 @@ instance : Inv LeviCivitaNum where
       return coeff⁻¹ * lc[H^(-exp)]
     else
       let largestTerm := largestTerm x
-      let restof := x.toPoly.toTerms.map (fun t => t / largestTerm) |> LeviCivitaNum.ofArray
+      let restof := x.toPolyG.toTerms.map (fun t => t / largestTerm) |> LeviCivitaNum.ofArray
       return largestTerm⁻¹ * restof.expandInverse
 
 

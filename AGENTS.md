@@ -40,7 +40,7 @@ Useful Commands
 
 Numerics / Literals
 
-- `OfScientific` is wired for core Rat, `Polynomial'`, and `LeviCivitaNum`.
+- `OfScientific` is wired for core Rat, generic `PolynomialG`, and `LeviCivitaNum`.
 - Decimal/scientific literals (e.g., `1.23`, `1.2e3`) work in coefficients; use `Std.Internal.Rat` in generic contexts.
 
 Caveats
