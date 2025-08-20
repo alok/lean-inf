@@ -1,6 +1,7 @@
 import LeanInf.LeviCivitaNum
 import LeanInf.Basic
 import LeanInf.Parser
+open LeanInf
 open LeviCivitaNum
 
 

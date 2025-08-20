@@ -1,10 +1,10 @@
 import LeanInf.Basic
 import LeanInf.LeviCivitaNum
-namespace LeviCivitaNum.Parser
+namespace LeanInf.Calc
 /-! This module contains the parser for the calculator. -/
 
 inductive Expr
-  | Number (value : LeviCivitaNum)
+  | Number (value : LeanInf.LeviCivitaNum)
   | InfiniteUnit
   | Plus (left right : Expr)
   | Minus (left right : Expr)
@@ -15,7 +15,10 @@ inductive Expr
   | LParen | RParen
 deriving Repr, BEq
 
-def interpreter: Expr -> Except String LeviCivitaNum
+instance : ToString Expr where
+  toString x := s!"{repr x}"
+
+def interpreter: Expr -> Except String LeanInf.LeviCivitaNum
   | .Number n => .ok n
   | .InfiniteUnit => .ok lc[H]
   | .Plus left right => do
@@ -53,9 +56,9 @@ def testCases := #[
   "a = 3; a - d"
   ]
 
-def allTogether (s : String) : Except String LeviCivitaNum := do
+def allTogether (s : String) : Except String LeanInf.LeviCivitaNum := do
   let expr <- parser s
   let result <- interpreter expr
   return result
 
-end LeviCivitaNum.Parser
+end LeanInf.Calc
