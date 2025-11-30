@@ -1,21 +1,25 @@
 import Lean
 import Lean.Parser
 import Std
+
 open Lean.Parser
+open Lean Elab Command
 open Parser
 
 
-/-- Check if a natural number is even -/
+/-- {lean}`Nat.isEven`: Check if a natural number is even -/
 def _root_.Nat.isEven (n : Nat) : Bool := n % 2 == 0
-/-- Check if a natural number is odd -/
+
+/-- {lean}`Nat.isOdd`: Check if a natural number is odd -/
 def _root_.Nat.isOdd (n : Nat) : Bool := n % 2 == 1
-/-- Check if an integer is even -/
+
+/-- {lean}`Int.isEven`: Check if an integer is even -/
 def _root_.Int.isEven (n : Int) : Bool := n % 2 == 0
-/-- Check if an integer is odd -/
+/-- {lean}`Int.isOdd`: Check if an integer is odd -/
 def _root_.Int.isOdd (n : Int) : Bool := n % 2 == 1
 
-
-def _root_.Array.maxBy? [Ord b] [Max b] [LT b] [DecidableRel (@LT.lt b _)] (xs : Array a) (f : a → b) : Option a :=
+/-- Find the maximum element in an array by a given function -/
+def _root_.Array.maxBy? {a b : Type _} [Ord b] [Max b] [LT b] [DecidableRel (@LT.lt b _)] (xs : Array a) (f : a → b) : Option a :=
   xs.foldl (init := none) fun acc x =>
     match acc with
     | none => some x
@@ -24,15 +28,13 @@ def _root_.Array.maxBy? [Ord b] [Max b] [LT b] [DecidableRel (@LT.lt b _)] (xs :
       | .lt => acc
       | _  => some x  -- Keep the last element in case of equality
 
-#eval #[1,2,3].maxBy? (fun x => x)
-
-
-
+#eval #[1,2,3].maxBy? (fun (x : Nat) => x)
 
 namespace Array
 
 namespace Notation
-/-- Array comprehension notation -/
+
+/-- {lean}`Lean.Parser.Category.compClause` Array comprehension notation -/
 declare_syntax_cat compClause
 
 /-- for x in xs -/
@@ -52,7 +54,7 @@ macro_rules
     for $x in $xs do
       if $p then out := out.push $t
     return out)
-  -- Nested list comprehensions disabled for nightly compatibility; use explicit loops instead.
+
 end Notation
 
 /-- Flatten an array of arrays. -/
@@ -93,7 +95,7 @@ protected def filterBy (xs: Array a) (bs: Array Bool) : Array a := Id.run do
     if b then out := out.push x
   return out
 
-/-- Inserts the `separator` between the elements of the array. TODO this is List.intersperse-/
+/-- Inserts the {lit}`separator` between the elements of the array. TODO this is List.intersperse-/
 protected def intersperse (separator : String) (array : Array String) : String := Id.run do
   let mut out := ""
   for _h: i in [:array.size] do
@@ -133,25 +135,7 @@ namespace Std.HashMap
 variable {K V : Type}
 variable [Hashable K] [BEq K]
 
-/--
-Checks if all key-value pairs in a `HashMap` satisfy a given predicate.
-
-This function applies the given predicate `f` to each key-value pair in the `HashMap`.
-It returns `true` if all pairs satisfy the predicate, and `false` otherwise.
--/
-def all (xs: Std.HashMap K V) (f: K → V → Bool) : Bool :=
-  xs.fold (fun acc k v => acc && f k v) (init := true)
-
-/--
-Checks if any key-value pairs in a `HashMap` satisfy a given predicate.
-
-This function applies the given predicate `f` to each key-value pair in the `HashMap`.
-It returns `true` if any pair satisfies the predicate, and `false` otherwise.
-
--- TODO does this short circuit? make test case
--/
-def any (xs: Std.HashMap K V) (f: K → V → Bool) : Bool :=
-  xs.fold (fun acc k v => acc || f k v) (init := false)
+-- Note: `all` and `any` are now provided by Std.HashMap in newer versions
 
 -- TODO this may break?
 instance [BEq V]: BEq (Std.HashMap K V) where
@@ -159,38 +143,37 @@ instance [BEq V]: BEq (Std.HashMap K V) where
     xs.size == ys.size && xs.all (fun k v => ys.getD k v == v)
 
 
-/-- Display as #{ a ↦ b, c ↦ d }-/
+/-- Display as #\{ a ↦ b, c ↦ d \} -/
 instance [Repr K] [Repr V] : Repr (Std.HashMap K V) where
   reprPrec m _ :=
     let entries := m.toArray.map (fun (k, v) => s!"{repr k} ↦ {repr v}")
-    "#{" ++ entries.intersperse ", " ++ "}"
+    "#{" ++ String.intercalate ", " entries.toList ++ "}"
 
 instance [ToString K] [ToString V] : ToString (Std.HashMap K V) where
   toString m := Id.run do
     let mut out := #[]
     for (k, v) in m do
       out := out.push s!"{k} ↦ {v}"
-    "#{" ++ out.intersperse ", " ++ "}"
+    "#{" ++ String.intercalate ", " out.toList ++ "}"
 
 
 
-/- This function creates a new `HashMap` with a single key-value pair, using the given `k` and `v` as the key and value respectively. -/
+/-- Creates a new HashMap with a single key-value pair. -/
 def singleton (k: K) (v : V) : Std.HashMap K V := Std.HashMap.emptyWithCapacity.insert k v
 
-/-- Merge two maps with a combining function. Values from `other` are combined with existing ones via `f`. -/
+/-- Merge two maps with a combining function. Values from {lit}`other` are combined with existing ones via {lit}`f`.
+    Implemented as a fold over {lit}`other.toList` to make equational reasoning straightforward. -/
 def mergeWith (m : Std.HashMap K V) (other : Std.HashMap K V) (f : K → V → V → V) : Std.HashMap K V :=
-  Id.run do
-    let mut r := m
-    for (k, v) in other do
-      match r.get? k with
-      | none => r := r.insert k v
-      | some vprev => r := r.insert k (f k vprev v)
-    return r
+  other.toList.foldl (fun r (p : K × V) =>
+    let k := p.1; let v := p.2
+    match r.get? k with
+    | none => r.insert k v
+    | some vprev => r.insert k (f k vprev v)) m
 
 
 end Std.HashMap
 
-/-- Unwraps an option, returning the contained value if it is `some`, or a default value if it is `none`. -/
+/-- Unwraps an option, returning the contained value if it is {lit}`some`, or a default value if it is {lit}`none`. -/
 def _root_.Option.unwrapOr [Inhabited a] (val: Option a) (default : a := Inhabited.default) : a :=
   val.getD default
 

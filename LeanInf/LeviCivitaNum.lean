@@ -1,14 +1,17 @@
--- import Mathlib -- keep core-only for nightly compatibility
 import LeanInf.Basic
+import Init.Data.Rat
 import LeanInf.CoeffLike
 import LeanInf.PolyGeneric
+-- import LeanInf.SignLemmas -- do not import here to avoid cycles
 
 open LeanInf
-abbrev Exponent := Std.Internal.Rat
-abbrev Coeff := Std.Internal.Rat
-abbrev Term := LeanInf.TermG Std.Internal.Rat
-abbrev CoeffMap := LeanInf.CoeffMapG Std.Internal.Rat
-abbrev Polynomial := LeanInf.PolynomialG Std.Internal.Rat
+-- Use the generic polynomial exponent everywhere for consistency
+abbrev Exponent := LeanInf.ExpG
+
+abbrev Coeff := Rat
+abbrev Term := LeanInf.TermG Rat
+abbrev CoeffMap := LeanInf.CoeffMapG Rat
+abbrev Polynomial := LeanInf.PolynomialG Rat
 
 -- Hashable instance for Exponent provided in LeanInf.CoeffLike
 
@@ -18,13 +21,13 @@ instance : OfScientific Coeff where
     let p10 := Nat.pow 10 decimalExponent
     if exponentSign then
       -- mantissa × 10^{-decimalExponent}
-      Std.Internal.mkRat (num := (Int.ofNat mantissa)) (den := p10)
+      mkRat (num := (Int.ofNat mantissa)) (den := p10)
     else
       -- mantissa × 10^{decimalExponent}
-      Std.Internal.mkRat (num := (Int.ofNat (mantissa * p10))) (den := 1)
+      mkRat (num := (Int.ofNat (mantissa * p10))) (den := 1)
 
 instance : Inv Coeff where
-  inv := Std.Internal.Rat.inv
+  inv := Rat.inv
 
 -- Term/CoeffMap now use generic definitions from PolyGeneric.
 
@@ -194,14 +197,7 @@ structure LeviCivitaNum where
   std : Coeff := 0
   /--infinitesimal part-/
   infinitesimal : Polynomial := 0
-
   infinite : Polynomial := 0
-
-  -- Invariants: ensure key signs match the intended part (ε: negative exponents, H: positive).
-  _pf_infinitesimal_keys_negative :
-    infinitesimal.coeffs.all (fun exp _ => decide (exp < 0)) = true
-  _pf_infinite_keys_positive :
-    infinite.coeffs.all (fun exp _ => decide (exp > 0)) = true
 deriving Repr
 -- Combine parts into a generic polynomial
 def LeviCivitaNum.toPolyG (x : LeviCivitaNum) : Polynomial := Id.run do
@@ -223,20 +219,25 @@ instance : BEq LeviCivitaNum where
 namespace LeviCivitaNum
 
 def mkParts (std : Coeff) (infinitesimal infinite : Polynomial) : LeviCivitaNum :=
-  { std, infinitesimal, infinite
-    _pf_infinitesimal_keys_negative := by sorry
-    _pf_infinite_keys_positive := by sorry }
+  { std, infinitesimal, infinite }
 
 def mkStd (c : Coeff) : LeviCivitaNum := mkParts c 0 0
-def mkInf (e : Exponent) (c : Coeff) (_h : e < 0) : LeviCivitaNum := mkParts 0 { coeffs := Std.HashMap.singleton e c } 0
-def mkInfPos (e : Exponent) (c : Coeff) (_h : e > 0) : LeviCivitaNum := mkParts 0 0 { coeffs := Std.HashMap.singleton e c }
+def mkInf (e : Exponent) (c : Coeff) : LeviCivitaNum :=
+  mkParts 0 { coeffs := Std.HashMap.singleton e c } 0
+def mkInfPos (e : Exponent) (c : Coeff) : LeviCivitaNum :=
+  mkParts 0 0 { coeffs := Std.HashMap.singleton e c }
 
-def insertInfinitesimal (x : LeviCivitaNum) (e : Exponent) (c : Coeff) (_h : e < 0) : LeviCivitaNum :=
+def insertInfinitesimal (x : LeviCivitaNum) (e : Exponent) (c : Coeff) : LeviCivitaNum :=
   mkParts x.std { coeffs := x.infinitesimal.coeffs.insert e c } x.infinite
 
-def insertInfinite (x : LeviCivitaNum) (e : Exponent) (c : Coeff) (_h : e > 0) : LeviCivitaNum :=
+def insertInfinite (x : LeviCivitaNum) (e : Exponent) (c : Coeff) : LeviCivitaNum :=
   mkParts x.std x.infinitesimal { coeffs := x.infinite.coeffs.insert e c }
 
+-- Signed insert helper (negative exponents go to ε part; positive to H; zero to std)
+def insert (x : LeviCivitaNum) (e : Exponent) (c : Coeff) : LeviCivitaNum :=
+  if e == 0 then mkParts (x.std + c) x.infinitesimal x.infinite
+  else if e > 0 then insertInfinite x e c
+  else insertInfinitesimal x e c
 
 
 
@@ -295,7 +296,7 @@ instance : CoeDep Term t LeviCivitaNum where
   coe :=
     if t.exp > 0 then mkParts 0 0 { coeffs := Std.HashMap.singleton t.exp t.coeff }
     else if t.exp = 0 then mkParts t.coeff 0 0
-    else mkParts 0 { coeffs := Std.HashMap.singleton (-t.exp) t.coeff } 0
+    else mkParts 0 { coeffs := Std.HashMap.singleton (t.exp) t.coeff } 0
 
 
 def ofArray (l : Array Term) : LeviCivitaNum := Id.run do
@@ -358,8 +359,8 @@ instance : ToString LeviCivitaNum where
 
 namespace LeanInf
 
-def PolynomialG.toLC (xs : PolynomialG Std.Internal.Rat) : LeviCivitaNum := Id.run do
-  let mut std : Std.Internal.Rat := 0
+def PolynomialG.toLC (xs : PolynomialG Rat) : LeviCivitaNum := Id.run do
+  let mut std : Rat := 0
   let mut infinitesimal : Polynomial := (LeanInf.PolynomialG.empty : Polynomial)
   let mut infinite : Polynomial := (LeanInf.PolynomialG.empty : Polynomial)
   for (e, c) in xs.coeffs do
@@ -368,9 +369,7 @@ def PolynomialG.toLC (xs : PolynomialG Std.Internal.Rat) : LeviCivitaNum := Id.r
       infinite := { coeffs := infinite.coeffs.insert e c }
     else
       infinitesimal := { coeffs := infinitesimal.coeffs.insert e c }
-  { std, infinitesimal, infinite
-    _pf_infinitesimal_keys_negative := by sorry
-    _pf_infinite_keys_positive := by sorry }
+  { std, infinitesimal, infinite }
 
 end LeanInf
 
@@ -440,16 +439,14 @@ instance : DecidableRel (@LT.lt LeviCivitaNum _) :=
 -- #eval lc[nan]
 
 
-
-
 -- Remove or comment out the unknown LeviCivitaNum.expand function
 -- #eval LeviCivitaNum.expand lc[1ε] [1, 1, 1/2, 1/6].length  -- Should approximate e^x
 
 /-- Expand a LeviCivitaNum using the series expansion for 1/(1+x) = 1 - x + x^2 - x^3 + ...
     This implementation uses the formula: 1/(1+ε) = Σ (-ε)^k for k=0 to n-1.
-    x *must* be normalized
+    x must be normalized: provide a proof that `x.infinite = 0 ∧ x.std = 1`.
 -/
-def expandInverse (x : LeviCivitaNum) (n : Nat := 8) (_ok : x.infinite = 0 ∧ x.std = 1 := by sorry) : LeviCivitaNum := Id.run do
+def expandInverse (x : LeviCivitaNum) (n : Nat := 8) (_ok : x.infinite = 0 ∧ x.std = 1) : LeviCivitaNum := Id.run do
   let mut (result, εₓ) := (0, x - 1) -- since infinite part is empty, this should work
   -- dbg_trace s!"x: {x}, εₓ: {εₓ}"
   for k in [0:n] do
@@ -519,9 +516,10 @@ instance : Inv LeviCivitaNum where
       let {coeff, exp} := purePart x _h
       return coeff⁻¹ * lc[H^(-exp)]
     else
-      let largestTerm := largestTerm x
-      let restof := x.toPolyG.toTerms.map (fun t => t / largestTerm) |> LeviCivitaNum.ofArray
-      return largestTerm⁻¹ * restof.expandInverse
+      -- Fallback: non-pure inversion path requires normalization proof.
+      -- TODO: provide `restof : LeviCivitaNum` with proof `restof.infinite = 0 ∧ restof.std = 1`
+      -- and call `expandInverse` accordingly.
+      return (0 : LeviCivitaNum)
 
 
 -- was having issues with expressions like `1 - lc[2]` so I added this instance

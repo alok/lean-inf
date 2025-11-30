@@ -1,10 +1,11 @@
 import Std
+import Init.Data.Rat
 import LeanInf.Basic
 import LeanInf.CoeffLike
 
 namespace LeanInf
 
-abbrev ExpG := Std.Internal.Rat
+abbrev ExpG := Rat
 
 structure TermG (α : Type u) where
   coeff : α
@@ -169,5 +170,5 @@ end PolynomialG
 end LeanInf
 
 -- Lightweight sanity checks for Rat-backed polynomials
-#eval ((2 : LeanInf.PolynomialG Std.Internal.Rat) + (3 : LeanInf.PolynomialG Std.Internal.Rat))
-#eval (toString ((1 : LeanInf.PolynomialG Std.Internal.Rat) + (1 : LeanInf.PolynomialG Std.Internal.Rat)))
+#eval ((2 : LeanInf.PolynomialG Rat) + (3 : LeanInf.PolynomialG Rat))
+#eval (toString ((1 : LeanInf.PolynomialG Rat) + (1 : LeanInf.PolynomialG Rat)))

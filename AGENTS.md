@@ -24,6 +24,18 @@ Next Run Plan (Code > Proof)
 - Re-enable selected `#eval` (non-bang) to show progress; keep `#eval!` off sorry paths.
 - Defer proofs; do not import `LeanInf/SignLemmas.lean` yet.
 
+Proofs (grind/mvcgen) game plan
+
+- Prefer keys-based invariants (Prop over `HashMap.contains`) so Std lemmas (`contains_insert`, `contains_map`, `mem_toList` bridges) compose with `grind`.
+- Verify functions Hoare-style with `grind` by case-splitting on branch lemmas. If one branch doesn’t close, rename it to `_` and extract a tiny helper (per the hackmd notes) to finish that case.
+- New scratchpad: `LeanInf/GrindHoare.lean` (NOT imported). Minimal `KeysNeg` + insert/map proofs using `grind` and Std HashMap lemmas. Use this file to iterate `mvcgen`/`grind` ideas without touching the build.
+- Merges: implement fold-based `mergeAdd` over `toList`; prove invariants by list induction using `contains_insert`; `grind` should close the subcases.
+- toLC plan: build `collectNeg/collectPos` via guarded folds and prove `KeysNeg/KeysPos` with `grind`, then construct LC from those; or iterate insert-preservation over the partitioning loop.
+
+Validation discipline
+
+- Run `lake build` after each meaningful patch to catch import cycles or regressions early. Keep experimental grind/mvcgen code in non-imported files until stabilized.
+
 Key Files
 
 - `LeanInf/CoeffLike.lean`: minimal class for coefficient-like types (`isPos/isNeg`), instances for core Rat and Float.

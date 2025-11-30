@@ -1,17 +1,20 @@
 import Std
+import Init.Data.Rat
 
 namespace LeanInf
 
 /-- Minimal coefficient interface for Levi-Civita polynomials.
-    Not a full field: intended to support types like `Float` too. -/
+    Not a full field: intended to support types like {name}`Float` too. -/
 class CoeffLike (α : Type u) where
-  -- Optional sign query for ordering-sensitive ops (e.g., signum).
+  /-- Returns true if the coefficient is positive. -/
   isPos : α → Bool
+  /-- Returns true if the coefficient is negative. -/
   isNeg : α → Bool
 
+/-- Convert positive/negative flags to an integer sign (-1, 0, or 1). -/
 def signInt (p n : Bool) : Int := if p then 1 else if n then -1 else 0
 
-instance : CoeffLike Std.Internal.Rat where
+instance : CoeffLike Rat where
   isPos x := x > 0
   isNeg x := x < 0
 
@@ -19,8 +22,6 @@ instance : CoeffLike Float where
   isPos x := x > 0.0
   isNeg x := x < 0.0
 
--- Hashing for rational exponents used as HashMap keys.
-instance : Hashable Std.Internal.Rat where
-  hash r := hash (r.num, r.den)
+-- Rat already derives `Hashable` in core (`Init.Data.Rat`).
 
 end LeanInf

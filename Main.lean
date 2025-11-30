@@ -80,3 +80,14 @@ def main : IO Unit := do
 --       (squared, inverse)
 -- Should be close to (2 + ε, 1/2 - ε/(4√2) + 3ε^2/(32√2) - 5ε^3/(128√2))
 -- #eval! lc[1, H, -H]
+
+
+structure LC where
+  finite : Rat
+  /-- powers of H. MUST have positive keys -/
+  infinite : Std.HashMap Rat Rat
+  /-- powers of ε. MUST have negative keys -/
+  infinitesimal : Std.HashMap Rat Rat
+
+  _pf_infinite : infinite.keys.all (fun x => x > 0) := sorry
+  -- _pf_infinitesimal : infinitesimal.keys.all (fun x => x < 0) := sorry

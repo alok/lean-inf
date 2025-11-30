@@ -69,7 +69,7 @@ abbrev Rat := Std.Internal.Rat
 
 -- Build LC safely using proved helper (still depends on lemma stubs; no #eval yet)
 #check (LeviCivitaNum.insertInfinitesimalP (mkStd (1 : Rat)) (-1) (2 : Rat) (by
-  -- bold assumption: negative exponent proof via arithmetic
+  -- bold assumption: negative exponent proof via arithmetic (no longer needed for construction)
   have : (-1 : Rat) < 0 := by decide
   simpa using this))
 

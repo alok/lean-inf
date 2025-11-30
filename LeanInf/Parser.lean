@@ -39,11 +39,12 @@ def parser: String -> Except String Expr
   | _ => .error "Not implemented"
 
 def parseAssignment (s:String) : Except String Expr:=do
-  let xs := s.split (· == '=')
-  let ident := xs[0]!
-  let rest := xs[1]!
-  let expr <- parser rest
-  return .Assign ident expr
+  let xs := (s.split (· == '=')).toList.map (·.toString)
+  match xs with
+  | [ident, rest] =>
+    let expr <- parser rest
+    return .Assign ident expr
+  | _ => .error "Invalid assignment syntax"
 
 def testCases := #[
   "1+d",
