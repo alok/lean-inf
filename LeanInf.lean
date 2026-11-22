@@ -5,6 +5,7 @@ import LeanInf.LeviCivitaNum
 import LeanInf.WF
 import LeanInf.SortedLC
 import LeanInf.Karatsuba
+import LeanInf.Kronecker
 import LeanInf.VerifiedRefactor
 import LeanInf.StepFunction
 import LeanInf.Parser

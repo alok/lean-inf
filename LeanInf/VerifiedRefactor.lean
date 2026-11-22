@@ -2,10 +2,11 @@ import Init.Data.Rat
 import LeanInf.LeviCivitaNum
 import LeanInf.SortedLC
 import LeanInf.Karatsuba
+import LeanInf.Kronecker
 
 namespace LeanInf
 
-open TermList Karatsuba
+open TermList Karatsuba Kronecker
 
 /-- Canonical, proof-carrying fast Levi-Civita number.
     Stores nonzero `(exponent, coefficient)` terms in strictly descending exponent order.
@@ -106,9 +107,11 @@ def neg (x : FastLC) : FastLC :=
 def sub (x y : FastLC) : FastLC :=
   ⟨TermList.subFast x.terms y.terms, TermList.subFast_wf x.wf y.wf⟩
 
-/-- Verified fast multiplication (`mulFast`: dense Karatsuba + balanced-tree sparse merge). -/
+/-- Verified fast multiplication (`mulFastKronecker`: Kronecker GMP + unboxed `Array Int`
+    Karatsuba + rational Karatsuba + contiguous `Array` sparse `mulTree`). -/
 def mul (x y : FastLC) : FastLC :=
-  ⟨Karatsuba.mulFast x.terms y.terms 16, Karatsuba.mulFast_wf x.wf y.wf 16⟩
+  ⟨Kronecker.mulFastKronecker x.terms y.terms 16,
+   Kronecker.mulFastKronecker_wf x.wf y.wf 16⟩
 
 /-- Verified sparse balanced-tree multiplication (`mulTree`) exposed for benchmarking. -/
 def mulSparse (x y : FastLC) : FastLC :=
@@ -144,7 +147,7 @@ instance : Mul FastLC where mul := mul
 
 theorem coeff_mul (x y : FastLC) (e : Rat) :
     (x * y).coeff e = TermList.coeffOf (TermList.mulNaiveTerms x.terms y.terms) e :=
-  Karatsuba.coeffOf_mulFast x.terms y.terms e 16
+  Kronecker.coeffOf_mulFastKronecker x.terms y.terms e 16
 
 /-- Verified equivalence: `mul` (Karatsuba + balanced merge) equals `mulNaive` structurally! -/
 theorem mul_eq_mulNaive (x y : FastLC) : x * y = mulNaive x y := by

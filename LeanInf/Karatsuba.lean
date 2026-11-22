@@ -693,9 +693,10 @@ private theorem rat_ofInt_mul (a b : Int) : Rat.ofInt (a * b) = Rat.ofInt a * Ra
 private theorem rat_ofInt_zero : Rat.ofInt 0 = 0 := by
   apply Rat.ext <;> simp [Rat.ofInt]
 
-private theorem aCoeff_of_ge {p : Array Int} {k : Nat} (h : p.size ≤ k) : aCoeff p k = 0 := by
+/-- Out-of-bounds `aCoeff` is `0`. -/
+theorem aCoeff_of_ge {arr : Array Int} {k : Nat} (h : arr.size ≤ k) : aCoeff arr k = 0 := by
   unfold aCoeff
-  have hnot : ¬ (k < p.size) := by omega
+  have hnot : ¬ (k < arr.size) := by omega
   simp [hnot]
 
 private theorem dCoeff_map_ofInt (p : Array Int) (k : Nat) :
@@ -712,7 +713,8 @@ private theorem dCoeff_map_ofInt (p : Array Int) (k : Nat) :
     rw [List.getElem?_eq_none h1]
     simpa using rat_ofInt_zero.symm
 
-private theorem aCoeff_push (arr : Array Int) (v : Int) (k : Nat) :
+/-- Coefficient lookup after `Array.push`. -/
+theorem aCoeff_push (arr : Array Int) (v : Int) (k : Nat) :
     aCoeff (arr.push v) k = if k < arr.size then aCoeff arr k else if k = arr.size then v else 0 := by
   unfold aCoeff
   simp only [Array.size_push]
@@ -725,7 +727,8 @@ private theorem aCoeff_push (arr : Array Int) (v : Int) (k : Nat) :
     · have hnot : ¬ (k < arr.size + 1) := by omega
       simp [hk, heq, hnot]
 
-private theorem aCoeff_set (arr : Array Int) (idx : Nat) (v : Int) (h : idx < arr.size) (k : Nat) :
+/-- Coefficient lookup after `Array.set`. -/
+theorem aCoeff_set (arr : Array Int) (idx : Nat) (v : Int) (h : idx < arr.size) (k : Nat) :
     aCoeff (arr.set idx v h) k = if k = idx then v else aCoeff arr k := by
   unfold aCoeff
   simp only [Array.size_set]
@@ -747,7 +750,8 @@ private theorem aCoeff_extract (arr : Array Int) (start stop k : Nat) :
     simp [hlt]
   · rfl
 
-private theorem aCoeff_replicate_zero (n k : Nat) :
+/-- Coefficient lookup on a zero-initialized `Array.replicate n 0`. -/
+theorem aCoeff_replicate_zero (n k : Nat) :
     aCoeff (Array.replicate n (0 : Int)) k = 0 := by
   unfold aCoeff
   split
@@ -883,7 +887,8 @@ termination_by b.size - j
 @[inline] def aScaleAddAt (out : Array Int) (offset : Nat) (c : Int) (b : Array Int) : Array Int :=
   if c == 0 then out else aScaleAddAtLoop offset c b 0 out
 
-private theorem aScaleAddAtLoop_size (offset : Nat) (c : Int) (b : Array Int) (j : Nat)
+/-- `aScaleAddAtLoop` preserves array size. -/
+theorem aScaleAddAtLoop_size (offset : Nat) (c : Int) (b : Array Int) (j : Nat)
     (out : Array Int) :
     (aScaleAddAtLoop offset c b j out).size = out.size := by
   unfold aScaleAddAtLoop
