@@ -24,21 +24,21 @@ def dCoeff (p : List Rat) (k : Nat) : Rat :=
 @[simp] theorem dCoeff_cons_succ (c : Rat) (rest : List Rat) (k : Nat) :
     dCoeff (c :: rest) (k + 1) = dCoeff rest k := rfl
 
-/-- Dense polynomial addition (`O(max |a| |b|)`). -/
+/-- Dense polynomial addition (`O(max |a| |b|)`), using zero-GCD `ratAddFast`. -/
 def dAdd : List Rat → List Rat → List Rat
   | [], b => b
   | a, [] => a
-  | x :: xs, y :: ys => (x + y) :: dAdd xs ys
+  | x :: xs, y :: ys => ratAddFast x y :: dAdd xs ys
 
-/-- Dense polynomial subtraction (`O(max |a| |b|)`). -/
+/-- Dense polynomial subtraction (`O(max |a| |b|)`), using zero-GCD `ratSubFast`. -/
 def dSub : List Rat → List Rat → List Rat
   | [], b => b.map (fun y => -y)
   | a, [] => a
-  | x :: xs, y :: ys => (x - y) :: dSub xs ys
+  | x :: xs, y :: ys => ratSubFast x y :: dSub xs ys
 
-/-- Dense scalar multiplication (`O(|p|)`). -/
+/-- Dense scalar multiplication (`O(|p|)`), using zero-GCD `ratMulFast`. -/
 def dScale (c : Rat) (p : List Rat) : List Rat :=
-  p.map (fun x => c * x)
+  p.map (fun x => ratMulFast c x)
 
 /-- Multiply a dense polynomial by `u^m` (prepend `m` zeros, `O(m)`). -/
 def dShift (m : Nat) (p : List Rat) : List Rat :=
@@ -70,7 +70,7 @@ theorem dCoeff_dAdd (a b : List Rat) (k : Nat) :
     | nil => simp [dAdd, dCoeff, Rat.add_zero]
     | cons y ys =>
       cases k with
-      | zero => rfl
+      | zero => exact ratAddFast_eq x y
       | succ k' => exact ih ys k'
 
 private theorem dCoeff_map_neg (b : List Rat) (k : Nat) :
@@ -96,7 +96,7 @@ theorem dCoeff_dSub (a b : List Rat) (k : Nat) :
       grind
     | cons y ys =>
       cases k with
-      | zero => rfl
+      | zero => exact ratSubFast_eq x y
       | succ k' => exact ih ys k'
 
 /-- Coefficient specification of `dScale`. -/
@@ -106,7 +106,7 @@ theorem dCoeff_dScale (c : Rat) (p : List Rat) (k : Nat) :
   | nil => simp [dScale, dCoeff, Rat.mul_zero]
   | cons x xs ih =>
     cases k with
-    | zero => rfl
+    | zero => exact ratMulFast_eq c x
     | succ k' => exact ih k'
 
 /-- Coefficient specification of `dShift`. -/
@@ -185,7 +185,7 @@ theorem dCoeff_dMulSchoolbook_add_left (a₁ a₂ b : List Rat) (k : Nat) :
     cases a₂ with
     | nil => simp [dAdd, dMulSchoolbook, Rat.add_zero]
     | cons y ys =>
-      simp only [dAdd, dMulSchoolbook, dCoeff_dAdd, dCoeff_dScale, Rat.add_mul]
+      simp only [dAdd, dMulSchoolbook, dCoeff_dAdd, dCoeff_dScale, ratAddFast_eq, Rat.add_mul]
       cases k with
       | zero =>
         simp only [dCoeff_cons_zero, Rat.add_zero]
@@ -549,7 +549,7 @@ private theorem coeffOf_fromGridAux_add (e0 step : Rat) (idx : Nat)
     cases b with
     | nil => simp [dAdd, fromGridAux, coeffOf, Rat.add_zero]
     | cons y ys =>
-      simp only [dAdd, fromGridAux]
+      simp only [dAdd, ratAddFast_eq, fromGridAux]
       have hrec := ih (idx + 1) ys
       by_cases hx : x = 0 <;> by_cases hy : y = 0 <;> by_cases hxy : x + y = 0
       · simp [hx, hy, Rat.add_zero, hrec]
@@ -578,8 +578,9 @@ private theorem coeffOf_fromGridAux_scale (e0 step c : Rat) (idx : Nat) (b : Lis
   induction b generalizing idx with
   | nil => simp [dScale, fromGridAux, coeffOf, Rat.mul_zero]
   | cons y ys ih =>
-    change coeffOf (fromGridAux e0 step idx ((c * y) :: dScale c ys)) e =
-      c * coeffOf (fromGridAux e0 step idx (y :: ys)) e
+    have hsc : dScale c (y :: ys) = (c * y) :: dScale c ys := by
+      simp [dScale, ratMulFast_eq]
+    rw [hsc]
     simp only [fromGridAux]
     have hrec := ih (idx + 1)
     by_cases hy : y = 0
@@ -698,7 +699,7 @@ def mulFast (xs ys : TermList) (cutoff : Nat := 16) : TermList :=
     mulTree xs ys
 
 /-- `mulFast` preserves canonical well-formedness. -/
-theorem mulFast_wf {xs ys : TermList} (hys : WF ys) (cutoff : Nat := 16) :
+theorem mulFast_wf {xs ys : TermList} (hxs : WF xs) (hys : WF ys) (cutoff : Nat := 16) :
     WF (mulFast xs ys cutoff) := by
   unfold mulFast
   split
@@ -708,10 +709,10 @@ theorem mulFast_wf {xs ys : TermList} (hys : WF ys) (cutoff : Nat := 16) :
         dsimp only
         split
         · exact fromGrid_wf hstep _
-        · exact mulTree_wf hys
-      · exact mulTree_wf hys
-    · exact mulTree_wf hys
-  · exact mulTree_wf hys
+        · exact mulTree_wf hxs hys
+      · exact mulTree_wf hxs hys
+    · exact mulTree_wf hxs hys
+  · exact mulTree_wf hxs hys
 
 /-- **Unified Multiplication Equivalence Theorem (zero `sorry`)**:
     `mulFast` (combining dense Karatsuba + balanced-tree sparse merge) produces the exact same

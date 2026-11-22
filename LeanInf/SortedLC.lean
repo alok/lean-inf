@@ -25,6 +25,145 @@ private theorem rat_mul_ne_zero {a b : Rat} (ha : a ≠ 0) (hb : b ≠ 0) : a * 
   · exact ha h1
   · exact hb h2
 
+/-! ### Zero-GCD `Rat` Fast Paths (`den == 1`) & Single-Cross-Multiply Comparison -/
+
+private theorem rat_eq_ofInt_of_den_eq_one {a : Rat} (h : a.den = 1) : a = Rat.ofInt a.num := by
+  apply Rat.ext <;> simp [Rat.ofInt, h]
+
+/-- Zero-GCD rational addition fast path when both denominators are `1`. -/
+@[inline] def ratAddFast (a b : Rat) : Rat :=
+  if a.den == 1 && b.den == 1 then Rat.ofInt (a.num + b.num) else a + b
+
+/-- Zero-GCD rational subtraction fast path when both denominators are `1`. -/
+@[inline] def ratSubFast (a b : Rat) : Rat :=
+  if a.den == 1 && b.den == 1 then Rat.ofInt (a.num - b.num) else a - b
+
+/-- Zero-GCD rational multiplication fast path when both denominators are `1`. -/
+@[inline] def ratMulFast (a b : Rat) : Rat :=
+  if a.den == 1 && b.den == 1 then Rat.ofInt (a.num * b.num) else a * b
+
+/-- Single-comparison 3-way ordering on `Rat` (zero multiplies when denominators match,
+    one cross-multiply pair otherwise). -/
+@[inline] def ratCmpFast (a b : Rat) : Ordering :=
+  if a.den == b.den then
+    if a.num > b.num then .gt
+    else if a.num < b.num then .lt
+    else .eq
+  else
+    let lhs := a.num * (b.den : Int)
+    let rhs := b.num * (a.den : Int)
+    if lhs > rhs then .gt
+    else if lhs < rhs then .lt
+    else .eq
+
+/-- `ratAddFast` is extensionally identical to `Rat.add`. -/
+theorem ratAddFast_eq (a b : Rat) : ratAddFast a b = a + b := by
+  unfold ratAddFast
+  split
+  · rename_i h
+    simp only [Bool.and_eq_true, beq_iff_eq] at h
+    rcases a with ⟨an, ad, had, hac⟩
+    rcases b with ⟨bn, bd, hbd, hbc⟩
+    simp only at h
+    rcases h with ⟨rfl, rfl⟩
+    rw [Rat.add_def]
+    apply Rat.ext <;> simp [Rat.normalize, Rat.ofInt]
+  · rfl
+
+/-- `ratSubFast` is extensionally identical to `Rat.sub`. -/
+theorem ratSubFast_eq (a b : Rat) : ratSubFast a b = a - b := by
+  unfold ratSubFast
+  split
+  · rename_i h
+    simp only [Bool.and_eq_true, beq_iff_eq] at h
+    rcases a with ⟨an, ad, had, hac⟩
+    rcases b with ⟨bn, bd, hbd, hbc⟩
+    simp only at h
+    rcases h with ⟨rfl, rfl⟩
+    rw [Rat.sub_def]
+    apply Rat.ext <;> simp [Rat.normalize, Rat.ofInt]
+  · rfl
+
+/-- `ratMulFast` is extensionally identical to `Rat.mul`. -/
+theorem ratMulFast_eq (a b : Rat) : ratMulFast a b = a * b := by
+  unfold ratMulFast
+  split
+  · rename_i h
+    simp only [Bool.and_eq_true, beq_iff_eq] at h
+    rcases a with ⟨an, ad, had, hac⟩
+    rcases b with ⟨bn, bd, hbd, hbc⟩
+    simp only at h
+    rcases h with ⟨rfl, rfl⟩
+    rw [Rat.mul_def]
+    apply Rat.ext <;> simp [Rat.normalize, Rat.ofInt]
+  · rfl
+
+/-- `ratCmpFast` returns `.gt` iff `a > b`. -/
+theorem ratCmpFast_gt (a b : Rat) : ratCmpFast a b = .gt ↔ a > b := by
+  unfold ratCmpFast
+  split
+  · rename_i hd
+    have hdeq : a.den = b.den := eq_of_beq hd
+    have hpos : (0 : Int) < (b.den : Int) := by
+      have := Nat.pos_of_ne_zero b.den_nz; omega
+    simp only [GT.gt, Rat.lt_iff, hdeq]
+    split
+    · rename_i h
+      simp only [true_iff]
+      exact Int.mul_lt_mul_of_pos_right h hpos
+    · split <;> (
+        simp only [reduceCtorEq, false_iff]
+        intro hlt
+        have : b.num < a.num := Int.lt_of_mul_lt_mul_right hlt (by omega)
+        omega)
+  · simp only [GT.gt, Rat.lt_iff]
+    split
+    · rename_i h; simp; omega
+    · split <;> (simp; omega)
+
+/-- `ratCmpFast` returns `.lt` iff `b > a`. -/
+theorem ratCmpFast_lt (a b : Rat) : ratCmpFast a b = .lt ↔ b > a := by
+  unfold ratCmpFast
+  split
+  · rename_i hd
+    have hdeq : a.den = b.den := eq_of_beq hd
+    have hpos : (0 : Int) < (b.den : Int) := by
+      have := Nat.pos_of_ne_zero b.den_nz; omega
+    simp only [GT.gt, Rat.lt_iff, hdeq]
+    split
+    · rename_i h
+      simp only [reduceCtorEq, false_iff]
+      intro hlt
+      have : a.num < b.num := Int.lt_of_mul_lt_mul_right hlt (by omega)
+      omega
+    · split
+      · rename_i h1 h2
+        simp only [true_iff]
+        exact Int.mul_lt_mul_of_pos_right h2 hpos
+      · rename_i h1 h2
+        simp only [reduceCtorEq, false_iff]
+        intro hlt
+        have : a.num < b.num := Int.lt_of_mul_lt_mul_right hlt (by omega)
+        omega
+  · simp only [GT.gt, Rat.lt_iff]
+    split
+    · rename_i h; simp; omega
+    · split
+      · rename_i h1 h2; simp; omega
+      · rename_i h1 h2; simp; omega
+
+private theorem rat_num_beq_zero_eq (r : Rat) : (r.num == 0) = (r == 0) := by
+  cases h1 : (r.num == 0) <;> cases h2 : (r == 0) <;> try rfl
+  · have hr : r = 0 := eq_of_beq h2
+    subst hr; simp at h1
+  · have hn : r.num = 0 := eq_of_beq h1
+    have hd : r.den = 1 := by
+      have hcop := r.reduced
+      rw [hn] at hcop
+      simpa using hcop
+    have hr : r = 0 := by apply Rat.ext <;> simp [hn, hd]
+    rw [hr] at h2; simp at h2
+
 /-! ### Denotational Semantics & Canonical Invariant -/
 
 /-- Exact mathematical coefficient of `H^e` denoted by any term list
@@ -383,6 +522,66 @@ theorem coeffOf_subFast (xs ys : TermList) (e : Rat) :
     coeffOf (subFast xs ys) e = coeffOf xs e - coeffOf ys e := by
   simp [subFast, coeffOf_addMerge, coeffOf_negFast, Rat.sub_eq_add_neg]
 
+/-- Tail-recursive, single-comparison sorted merge loop compiled via `@[csimp]`. -/
+def addMergeTRLoop : TermList → TermList → TermList → TermList
+  | [], ys, acc => acc.reverseAux ys
+  | xs, [], acc => acc.reverseAux xs
+  | (ex, cx) :: xs, (ey, cy) :: ys, acc =>
+    match ratCmpFast ex ey with
+    | .gt => addMergeTRLoop xs ((ey, cy) :: ys) ((ex, cx) :: acc)
+    | .lt => addMergeTRLoop ((ex, cx) :: xs) ys ((ey, cy) :: acc)
+    | .eq =>
+      let s := ratAddFast cx cy
+      if s.num == 0 then addMergeTRLoop xs ys acc
+      else addMergeTRLoop xs ys ((ex, s) :: acc)
+
+/-- Compiled tail-recursive entry point for `addMerge`. -/
+@[inline] def addMergeTR (xs ys : TermList) : TermList :=
+  addMergeTRLoop xs ys []
+
+private theorem addMergeTRLoop_eq (xs ys acc : TermList) :
+    addMergeTRLoop xs ys acc = acc.reverse ++ addMerge xs ys := by
+  induction xs generalizing ys acc with
+  | nil =>
+    simp [addMergeTRLoop, addMerge, List.reverseAux_eq]
+  | cons px restx ihx =>
+    rcases px with ⟨ex, cx⟩
+    induction ys generalizing acc with
+    | nil =>
+      simp [addMergeTRLoop, addMerge, List.reverseAux_eq]
+    | cons py resty ihy =>
+      rcases py with ⟨ey, cy⟩
+      simp only [addMergeTRLoop, addMerge]
+      cases hcmp : ratCmpFast ex ey with
+      | gt =>
+        have hgt : ex > ey := (ratCmpFast_gt ex ey).mp hcmp
+        simp only [hgt, ↓reduceIte]
+        rw [ihx ((ey, cy) :: resty) ((ex, cx) :: acc), List.reverse_cons, List.append_assoc]
+        rfl
+      | lt =>
+        have hlt : ey > ex := (ratCmpFast_lt ex ey).mp hcmp
+        have hngt : ¬ (ex > ey) := by grind
+        simp only [hngt, hlt, ↓reduceIte]
+        rw [ihy ((ey, cy) :: acc), List.reverse_cons, List.append_assoc]
+        rfl
+      | eq =>
+        have hngt : ¬ (ex > ey) := by
+          intro h; have := (ratCmpFast_gt ex ey).mpr h; rw [hcmp] at this; cases this
+        have hnlt : ¬ (ey > ex) := by
+          intro h; have := (ratCmpFast_lt ex ey).mpr h; rw [hcmp] at this; cases this
+        simp only [hngt, hnlt, ↓reduceIte, ratAddFast_eq, rat_num_beq_zero_eq]
+        split
+        · exact ihx resty acc
+        · rw [ihx resty ((ex, cx + cy) :: acc), List.reverse_cons, List.append_assoc]
+          rfl
+
+/-- **`@[csimp]` Verified Kernel Replacement (`addMerge → addMergeTR`)**:
+    Replaces recursive `addMerge` at compile time with single-comparison, zero-GCD,
+    tail-recursive `addMergeTR` while keeping all existing proofs unchanged. -/
+@[csimp] theorem addMerge_eq_addMergeTR : @addMerge = @addMergeTR := by
+  funext xs ys
+  simpa [addMergeTR] using (addMergeTRLoop_eq xs ys []).symm
+
 /-! ### Verified Refactor 3A: Balanced-Tree Sparse Multiplication -/
 
 /-- Multiply a canonical term list by a single term `(e0, c0)` in `O(m)` time,
@@ -390,6 +589,37 @@ theorem coeffOf_subFast (xs ys : TermList) (e : Rat) :
 def scaleTerm (e0 c0 : Rat) (ys : TermList) : TermList :=
   if c0 == 0 then []
   else ys.map (fun (ey, cy) => (e0 + ey, c0 * cy))
+
+/-- Tail-recursive zero-GCD scaling loop compiled via `@[csimp]` for `scaleTerm`. -/
+def scaleTermTRLoop (e0 c0 : Rat) : TermList → TermList → TermList
+  | [], acc => acc.reverse
+  | (ey, cy) :: rest, acc =>
+    scaleTermTRLoop e0 c0 rest ((ratAddFast e0 ey, ratMulFast c0 cy) :: acc)
+
+/-- Compiled tail-recursive entry point for `scaleTerm`. -/
+@[inline] def scaleTermTR (e0 c0 : Rat) (ys : TermList) : TermList :=
+  if c0.num == 0 then []
+  else scaleTermTRLoop e0 c0 ys []
+
+private theorem scaleTermTRLoop_eq (e0 c0 : Rat) (ys acc : TermList) :
+    scaleTermTRLoop e0 c0 ys acc = acc.reverse ++ ys.map (fun (ey, cy) => (e0 + ey, c0 * cy)) := by
+  induction ys generalizing acc with
+  | nil => simp [scaleTermTRLoop]
+  | cons p rest ih =>
+    rcases p with ⟨ey, cy⟩
+    simp only [scaleTermTRLoop, List.map_cons, ratAddFast_eq, ratMulFast_eq]
+    rw [ih ((e0 + ey, c0 * cy) :: acc), List.reverse_cons, List.append_assoc]
+    rfl
+
+/-- **`@[csimp]` Verified Kernel Replacement (`scaleTerm → scaleTermTR`)**:
+    Replaces `scaleTerm` with tail-recursive, zero-GCD `scaleTermTR` at compile time. -/
+@[csimp] theorem scaleTerm_eq_scaleTermTR : @scaleTerm = @scaleTermTR := by
+  funext e0 c0 ys
+  unfold scaleTerm scaleTermTR
+  rw [rat_num_beq_zero_eq]
+  split
+  · rfl
+  · simpa using (scaleTermTRLoop_eq e0 c0 ys []).symm
 
 /-- `scaleTerm` shifts the `AllLt` bound by `+ e0`. -/
 theorem scaleTerm_allLt {b e0 c0 : Rat} {ys : TermList} (h : AllLt b ys) :
@@ -675,17 +905,37 @@ theorem coeffOf_mergeAll (l : List TermList) (e : Rat) :
     rw [mergeAll, coeffOf_mergeAll (mergePairs (x :: y :: rest)) e, sumCoeffOf_mergePairs]
 termination_by l.length
 
-/-- Verified sparse multiplication: generates `n` already-sorted shifted runs and merges them
-    via balanced binary tree (`O(nm log n)`, zero hashing). -/
+/-- Verified sparse multiplication: short-circuits empty/singleton operands in `O(n)`
+    and maps the shorter operand so balanced-tree merging runs in `O(nm log min(n, m))`. -/
 def mulTree (xs ys : TermList) : TermList :=
-  mergeAll (xs.map (fun (ex, cx) => scaleTerm ex cx ys))
+  match xs, ys with
+  | [], _ => []
+  | _, [] => []
+  | [(ex, cx)], ys => scaleTerm ex cx ys
+  | xs, [(ey, cy)] => scaleTerm ey cy xs
+  | xs, ys =>
+    if xs.length ≤ ys.length then
+      mergeAll (xs.map (fun (ex, cx) => scaleTerm ex cx ys))
+    else
+      mergeAll (ys.map (fun (ey, cy) => scaleTerm ey cy xs))
 
 /-- `mulTree` preserves canonical well-formedness. -/
-theorem mulTree_wf {xs ys : TermList} (hys : WF ys) : WF (mulTree xs ys) := by
-  apply mergeAll_wf
-  intro t ht
-  rcases List.mem_map.mp ht with ⟨⟨ex, cx⟩, _, rfl⟩
-  exact scaleTerm_wf hys
+theorem mulTree_wf {xs ys : TermList} (hxs : WF xs) (hys : WF ys) : WF (mulTree xs ys) := by
+  unfold mulTree
+  split
+  · trivial
+  · trivial
+  · exact scaleTerm_wf hys
+  · exact scaleTerm_wf hxs
+  · split
+    · apply mergeAll_wf
+      intro t ht
+      rcases List.mem_map.mp ht with ⟨⟨ex, cx⟩, _, rfl⟩
+      exact scaleTerm_wf hys
+    · apply mergeAll_wf
+      intro t ht
+      rcases List.mem_map.mp ht with ⟨⟨ey, cy⟩, _, rfl⟩
+      exact scaleTerm_wf hxs
 
 /-- Sum of shifted runs equals naive multiplication at every exponent `e`. -/
 theorem sumCoeffOf_scaleRuns (xs ys : TermList) (e : Rat) :
@@ -701,7 +951,18 @@ theorem sumCoeffOf_scaleRuns (xs ys : TermList) (e : Rat) :
     product as naive `O(nm)` multiplication at every rational exponent `e`. -/
 theorem coeffOf_mulTree (xs ys : TermList) (e : Rat) :
     coeffOf (mulTree xs ys) e = coeffOf (mulNaiveTerms xs ys) e := by
-  rw [mulTree, coeffOf_mergeAll, sumCoeffOf_scaleRuns]
+  unfold mulTree
+  split
+  · rfl
+  · rw [coeffOf_mulNaiveTerms_comm]; rfl
+  · rename_i ex cx ys'
+    rw [coeffOf_scaleTerm, coeffOf_mulNaiveTerms_cons, coeffOf_mulNaiveTerms_nil, Rat.add_zero]
+  · rename_i xs' ey cy _
+    rw [coeffOf_scaleTerm, coeffOf_mulNaiveTerms_comm, coeffOf_mulNaiveTerms_cons,
+        coeffOf_mulNaiveTerms_nil, Rat.add_zero]
+  · split
+    · rw [coeffOf_mergeAll, sumCoeffOf_scaleRuns]
+    · rw [coeffOf_mergeAll, sumCoeffOf_scaleRuns, coeffOf_mulNaiveTerms_comm]
 
 /-! ### Sorting & Truncation Helpers -/
 

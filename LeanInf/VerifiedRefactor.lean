@@ -108,11 +108,11 @@ def sub (x y : FastLC) : FastLC :=
 
 /-- Verified fast multiplication (`mulFast`: dense Karatsuba + balanced-tree sparse merge). -/
 def mul (x y : FastLC) : FastLC :=
-  ⟨Karatsuba.mulFast x.terms y.terms 16, Karatsuba.mulFast_wf y.wf 16⟩
+  ⟨Karatsuba.mulFast x.terms y.terms 16, Karatsuba.mulFast_wf x.wf y.wf 16⟩
 
 /-- Verified sparse balanced-tree multiplication (`mulTree`) exposed for benchmarking. -/
 def mulSparse (x y : FastLC) : FastLC :=
-  ⟨TermList.mulTree x.terms y.terms, TermList.mulTree_wf y.wf⟩
+  ⟨TermList.mulTree x.terms y.terms, TermList.mulTree_wf x.wf y.wf⟩
 
 /-- Verified naive reference multiplication (`normalize ∘ mulNaiveTerms`) for benchmarking. -/
 def mulNaive (x y : FastLC) : FastLC :=
