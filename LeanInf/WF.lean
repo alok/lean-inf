@@ -4,24 +4,28 @@ import LeanInf.LeviCivitaNum
 namespace LeanInf
 open LeviCivitaNum
 
--- Boolean well-formedness checks for parts
+/-- Check that every exponent in an infinitesimal polynomial is strictly negative. -/
 def wfNeg (p : Polynomial) : Bool :=
   p.coeffs.all (fun e _ => decide (e < 0))
 
+/-- Check that every exponent in an infinite polynomial is strictly positive. -/
 def wfPos (p : Polynomial) : Bool :=
   p.coeffs.all (fun e _ => decide (e > 0))
 
+/-- Check that both the infinitesimal and infinite parts of a `LeviCivitaNum` satisfy their sign invariants. -/
 def wfLC (x : LeviCivitaNum) : Bool := wfNeg x.infinitesimal && wfPos x.infinite
 
--- Checked variants that return the computed value and whether the invariant holds afterward
+/-- Insert into the infinitesimal map and return the updated number along with its well-formedness check. -/
 def insertInfinitesimalChecked (x : LeviCivitaNum) (e : Exponent) (c : Coeff) : LeviCivitaNum × Bool :=
   let y := { x with infinitesimal := { coeffs := x.infinitesimal.coeffs.insert e c } }
   (y, wfLC y)
 
+/-- Insert into the infinite map and return the updated number along with its well-formedness check. -/
 def insertInfiniteChecked (x : LeviCivitaNum) (e : Exponent) (c : Coeff) : LeviCivitaNum × Bool :=
   let y := { x with infinite := { coeffs := x.infinite.coeffs.insert e c } }
   (y, wfLC y)
 
+/-- Negate a `LeviCivitaNum` and check that well-formedness is preserved. -/
 def negChecked (x : LeviCivitaNum) : LeviCivitaNum × Bool :=
   let y : LeviCivitaNum :=
     { std := -x.std
@@ -29,6 +33,7 @@ def negChecked (x : LeviCivitaNum) : LeviCivitaNum × Bool :=
       infinite := { coeffs := x.infinite.coeffs.map (fun _ v => -v) } }
   (y, wfLC y)
 
+/-- Add two `LeviCivitaNum` values via `mergeWith` and check that well-formedness is preserved. -/
 def addChecked (x y : LeviCivitaNum) : LeviCivitaNum × Bool :=
   let z : LeviCivitaNum :=
     { std := x.std + y.std

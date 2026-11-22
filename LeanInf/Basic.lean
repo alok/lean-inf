@@ -6,47 +6,49 @@ open Lean.Parser
 open Lean Elab Command
 open Parser
 
-
-/-- {lean}`Nat.isEven`: Check if a natural number is even -/
+/-- Check if a natural number is even. -/
 def _root_.Nat.isEven (n : Nat) : Bool := n % 2 == 0
 
-/-- {lean}`Nat.isOdd`: Check if a natural number is odd -/
+/-- Check if a natural number is odd. -/
 def _root_.Nat.isOdd (n : Nat) : Bool := n % 2 == 1
 
-/-- {lean}`Int.isEven`: Check if an integer is even -/
+/-- Check if an integer is even. -/
 def _root_.Int.isEven (n : Int) : Bool := n % 2 == 0
-/-- {lean}`Int.isOdd`: Check if an integer is odd -/
+
+/-- Check if an integer is odd. -/
 def _root_.Int.isOdd (n : Int) : Bool := n % 2 == 1
 
-/-- Find the maximum element in an array by a given function -/
-def _root_.Array.maxBy? {a b : Type _} [Ord b] [Max b] [LT b] [DecidableRel (@LT.lt b _)] (xs : Array a) (f : a → b) : Option a :=
+/-- Find the maximum element in an array by a given key function. -/
+def _root_.Array.maxBy? {a b : Type _} [Ord b] [Max b] [LT b] [DecidableRel (@LT.lt b _)]
+    (xs : Array a) (f : a → b) : Option a :=
   xs.foldl (init := none) fun acc x =>
     match acc with
     | none => some x
     | some v =>
       match compare (f x) (f v) with
       | .lt => acc
-      | _  => some x  -- Keep the last element in case of equality
-
-#eval #[1,2,3].maxBy? (fun (x : Nat) => x)
+      | _  => some x
 
 namespace Array
 
 namespace Notation
 
-/-- {lean}`Lean.Parser.Category.compClause` Array comprehension notation -/
+/-- Syntax category for array comprehension clauses. -/
 declare_syntax_cat compClause
 
-/-- for x in xs -/
+/-- Comprehension iterator clause. -/
 syntax "for " term " in " term : compClause
 
-/-- if x -/
+/-- Guard clause syntax. -/
 syntax ifClause := "if " term
-/-- special case for x in xs if pred x-/
+
+/-- Filtered comprehension iterator clause. -/
 syntax "for " term " in " term " if " term : compClause
-/-- `#[x | for x in xs]` -/
+
+/-- Array comprehension notation. -/
 syntax "#[" term " | " compClause,* "]" : term
-/-- Semantics for Array comprehension notation.-/
+
+/-- Semantics for array comprehension notation. -/
 macro_rules
   | `(#[$t | for $x in $xs]) => `(($xs).map (fun $x ↦ $t))
   | `(#[$t | for $x in $xs if $p]) => `(Id.run do
@@ -64,14 +66,6 @@ def join {α} (xss : Array (Array α)) : Array α := Id.run do
     out := out ++ xs
   out
 
-#eval #[x | for x in #[1,2,3] if x > 2]
-#eval #[#[x | for x in #[1,2,3] ] | for _ in #[1,2,3]]
-
-private def dropWhile (array : Array a) (predicate : a → Bool) : Array a :=
-  match array.findIdx? (!predicate ·) with
-  | none => #[]
-  | some i => array[i:]
-
 /-- Compute the sum of all elements in an array (renamed to avoid conflict with core). -/
 def sum' [Add a] [Zero a] (arr : Array a) : a :=
   arr.foldr Add.add 0
@@ -80,7 +74,7 @@ def sum' [Add a] [Zero a] (arr : Array a) : a :=
 def prod' [Mul a] [One a] (arr : Array a) : a :=
   arr.foldr Mul.mul 1
 
-/-- Cartesian product of 2 arrays. Example of the list comprehension notation's flexibility. -/
+/-- Cartesian product of two arrays. -/
 protected def cartProd (xs : Array a) (ys : Array b) : Array (a × b) := Id.run do
   let mut out := #[]
   for x in xs do
@@ -88,45 +82,20 @@ protected def cartProd (xs : Array a) (ys : Array b) : Array (a × b) := Id.run 
       out := out.push (x, y)
   out
 
-/-- Filters a list of values based on a list of booleans. -/
-protected def filterBy (xs: Array a) (bs: Array Bool) : Array a := Id.run do
+/-- Filter an array of values using a parallel array of booleans. -/
+protected def filterBy (xs : Array a) (bs : Array Bool) : Array a := Id.run do
   let mut out := #[]
   for (x, b) in xs.zip bs do
     if b then out := out.push x
   return out
 
-/-- Inserts the {lit}`separator` between the elements of the array. TODO this is List.intersperse-/
+/-- Join an array of strings with a separator. -/
 protected def intersperse (separator : String) (array : Array String) : String := Id.run do
   let mut out := ""
-  for _h: i in [:array.size] do
+  for _h : i in [:array.size] do
     if i > 0 then out := out ++ separator
     out := out ++ array[i]
   return out
-
-#eval Array.sum' #[1, 2, 3, 4] = 10
-#eval Array.sum' #[] = 0
-#eval Array.prod' #[1, 2, 3, 4] = 24
-#eval Array.prod' #[] = 1
-
-#eval #[2 | for _ in [1,2]]
-#eval #[x | for (x, _) in [(1,2),(3,4)]]
-#eval (Id.run do
-  let mut out := #[]
-  for x in Array.range 5 do
-    for y in Array.range 5 do
-      if x + y ≤ 3 then out := out.push (x, y)
-  out)
-#eval #[x| for x in #[1,2,3]]
--- #eval #[4 | if 1 < 0] = #[]
--- #eval #[4 | if 1 < 3] = #[4]
-#eval (Id.run do
-  let mut out := #[]
-  for x in Array.range 5 do
-    for y in Array.range 5 do
-      if x + y ≤ 3 then out := out.push (x, y)
-  out)
-#eval #[1,2,3].filterBy #[true, false, true]
-#eval #[].dropWhile (fun x => x < 0)
 
 end Array
 
@@ -135,15 +104,13 @@ namespace Std.HashMap
 variable {K V : Type}
 variable [Hashable K] [BEq K]
 
--- Note: `all` and `any` are now provided by Std.HashMap in newer versions
-
--- TODO this may break?
-instance [BEq V]: BEq (Std.HashMap K V) where
+/-- Extensional equality on `Std.HashMap`.
+    Fixes the original `getD k v == v` bug that returned `true` on missing keys. -/
+instance [BEq V] : BEq (Std.HashMap K V) where
   beq xs ys :=
-    xs.size == ys.size && xs.all (fun k v => ys.getD k v == v)
+    xs.size == ys.size && xs.all (fun k v => ys.get? k == some v)
 
-
-/-- Display as #\{ a ↦ b, c ↦ d \} -/
+/-- Display a map as `#{ k ↦ v, ... }`. -/
 instance [Repr K] [Repr V] : Repr (Std.HashMap K V) where
   reprPrec m _ :=
     let entries := m.toArray.map (fun (k, v) => s!"{repr k} ↦ {repr v}")
@@ -156,31 +123,25 @@ instance [ToString K] [ToString V] : ToString (Std.HashMap K V) where
       out := out.push s!"{k} ↦ {v}"
     "#{" ++ String.intercalate ", " out.toList ++ "}"
 
+/-- Create a new `Std.HashMap` with a single key-value pair. -/
+def singleton (k : K) (v : V) : Std.HashMap K V :=
+  Std.HashMap.emptyWithCapacity.insert k v
 
-
-/-- Creates a new HashMap with a single key-value pair. -/
-def singleton (k: K) (v : V) : Std.HashMap K V := Std.HashMap.emptyWithCapacity.insert k v
-
-/-- Merge two maps with a combining function. Values from {lit}`other` are combined with existing ones via {lit}`f`.
-    Implemented as a fold over {lit}`other.toList` to make equational reasoning straightforward. -/
-def mergeWith (m : Std.HashMap K V) (other : Std.HashMap K V) (f : K → V → V → V) : Std.HashMap K V :=
+/-- Merge two maps with a combining function. Values from {lit}`other` are combined with
+    existing ones via {lit}`f`. -/
+def mergeWith (m : Std.HashMap K V) (other : Std.HashMap K V) (f : K → V → V → V) :
+    Std.HashMap K V :=
   other.toList.foldl (fun r (p : K × V) =>
     let k := p.1; let v := p.2
     match r.get? k with
     | none => r.insert k v
     | some vprev => r.insert k (f k vprev v)) m
 
-
 end Std.HashMap
 
-/-- Unwraps an option, returning the contained value if it is {lit}`some`, or a default value if it is {lit}`none`. -/
-def _root_.Option.unwrapOr [Inhabited a] (val: Option a) (default : a := Inhabited.default) : a :=
+/-- Unwrap an option, returning the contained value if {lit}`some`, or a default value otherwise. -/
+def _root_.Option.unwrapOr [Inhabited a] (val : Option a) (default : a := Inhabited.default) : a :=
   val.getD default
 
-#eval (some 3).unwrapOr
-#eval none.unwrapOr 2
-
-/-- Construct a new empty list. -/
-def _root_.List.empty: List a := []
-
--- Rational-specific experiments removed for nightly compatibility.
+/-- Construct an empty list. -/
+def _root_.List.empty : List a := []
