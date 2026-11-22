@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.alok.lean-inf</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/bun</string>
+    <string>run</string>
+    <string>/Users/alokbeniwal/lean-inf/server/server.ts</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/alokbeniwal/lean-inf</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PORT</key>
+    <string>4420</string>
+    <key>HOST</key>
+    <string>127.0.0.1</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/alokbeniwal/lean-inf/server/server.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/alokbeniwal/lean-inf/server/server.log</string>
+</dict>
+</plist>

@@ -1,0 +1,194 @@
+{
+  "benchmarks": [
+    {
+      "category": "mul_dense",
+      "size": 8,
+      "iters": 80,
+      "naive_us": 37.591662,
+      "sparse_us": 27.096875,
+      "fast_us": 27.8698,
+      "speedup": 1.348831,
+      "verified": true
+    },
+    {
+      "category": "mul_dense",
+      "size": 16,
+      "iters": 40,
+      "naive_us": 133.807275,
+      "sparse_us": 112.103125,
+      "fast_us": 86.540625,
+      "speedup": 1.546179,
+      "verified": true
+    },
+    {
+      "category": "mul_dense",
+      "size": 32,
+      "iters": 24,
+      "naive_us": 476.171875,
+      "sparse_us": 424.128458,
+      "fast_us": 253.392375,
+      "speedup": 1.879188,
+      "verified": true
+    },
+    {
+      "category": "mul_dense",
+      "size": 64,
+      "iters": 12,
+      "naive_us": 1794.416667,
+      "sparse_us": 1745.385417,
+      "fast_us": 796.482583,
+      "speedup": 2.252926,
+      "verified": true
+    },
+    {
+      "category": "mul_dense",
+      "size": 128,
+      "iters": 6,
+      "naive_us": 7298.5695,
+      "sparse_us": 6929.027833,
+      "fast_us": 2290.395833,
+      "speedup": 3.186597,
+      "verified": true
+    },
+    {
+      "category": "mul_dense",
+      "size": 256,
+      "iters": 3,
+      "naive_us": 28901.388667,
+      "sparse_us": 26886.555333,
+      "fast_us": 6640.888667,
+      "speedup": 4.352036,
+      "verified": true
+    },
+    {
+      "category": "mul_dense",
+      "size": 512,
+      "iters": 2,
+      "naive_us": 116422.104,
+      "sparse_us": 109490.604,
+      "fast_us": 20076.1875,
+      "speedup": 5.799015,
+      "verified": true
+    },
+    {
+      "category": "mul_sparse",
+      "size": 16,
+      "iters": 40,
+      "naive_us": 154.778125,
+      "sparse_us": null,
+      "fast_us": 110.2552,
+      "speedup": 1.403817,
+      "verified": true
+    },
+    {
+      "category": "mul_sparse",
+      "size": 32,
+      "iters": 16,
+      "naive_us": 626.947937,
+      "sparse_us": null,
+      "fast_us": 488.765625,
+      "speedup": 1.282717,
+      "verified": true
+    },
+    {
+      "category": "mul_sparse",
+      "size": 64,
+      "iters": 8,
+      "naive_us": 2458.520875,
+      "sparse_us": null,
+      "fast_us": 1936.45825,
+      "speedup": 1.269597,
+      "verified": true
+    },
+    {
+      "category": "signum",
+      "size": 32,
+      "iters": 800,
+      "naive_us": 8.231145,
+      "sparse_us": null,
+      "fast_us": 0.01474,
+      "speedup": 558.42232,
+      "verified": true
+    },
+    {
+      "category": "signum",
+      "size": 128,
+      "iters": 300,
+      "naive_us": 35.719167,
+      "sparse_us": null,
+      "fast_us": 0.065,
+      "speedup": 549.525641,
+      "verified": true
+    },
+    {
+      "category": "signum",
+      "size": 256,
+      "iters": 150,
+      "naive_us": 75.533053,
+      "sparse_us": null,
+      "fast_us": 0.243053,
+      "speedup": 310.767404,
+      "verified": true
+    },
+    {
+      "category": "pow",
+      "size": 16,
+      "iters": 12,
+      "naive_us": 546.625,
+      "sparse_us": null,
+      "fast_us": 151.47575,
+      "speedup": 3.608663,
+      "verified": true
+    },
+    {
+      "category": "pow",
+      "size": 32,
+      "iters": 6,
+      "naive_us": 2530.993167,
+      "sparse_us": null,
+      "fast_us": 584.715167,
+      "speedup": 4.328592,
+      "verified": true
+    },
+    {
+      "category": "pow",
+      "size": 48,
+      "iters": 3,
+      "naive_us": 6386.833333,
+      "sparse_us": null,
+      "fast_us": 1478.680333,
+      "speedup": 4.319279,
+      "verified": true
+    },
+    {
+      "category": "inv",
+      "size": 12,
+      "iters": 24,
+      "naive_us": 253.6875,
+      "sparse_us": null,
+      "fast_us": 62.494792,
+      "speedup": 4.059338,
+      "verified": true
+    },
+    {
+      "category": "inv",
+      "size": 24,
+      "iters": 8,
+      "naive_us": 947.00525,
+      "sparse_us": null,
+      "fast_us": 127.255125,
+      "speedup": 7.441785,
+      "verified": true
+    },
+    {
+      "category": "inv",
+      "size": 40,
+      "iters": 4,
+      "naive_us": 3006.125,
+      "sparse_us": null,
+      "fast_us": 218.323,
+      "speedup": 13.769163,
+      "verified": true
+    }
+  ]
+}

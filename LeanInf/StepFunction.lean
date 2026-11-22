@@ -70,7 +70,11 @@ def logisticDeriv2Central (x : FastLC) (order : Nat := 12) : Except String FastL
   let yMid ← logisticStep x order
   let yMinus ← logisticStep (x - eps2) order
   let two : FastLC := 2
-  return ((yPlus - two * yMid + yMinus) * FastLC.mono 4 1).truncate order
+  let raw := (yPlus - two * yMid + yMinus) * FastLC.mono 4 1
+  -- Series truncation error from `logisticStep` at `order` sits at `ε^order`,
+  -- which after dividing by `ε^4` sits at `ε^(order - 4)`. Drop terms at or below that noise floor.
+  let floorExp : Rat := -((Int.ofNat (order - 4) - 2 : Int) : Rat)
+  return (raw.dropBelow floorExp).truncate order
 
 /-- Closed-form nonstandard derivative `L'_H(x) = H · exp(-H x) / (1 + exp(-H x))²`
     for direct comparison with the automatic difference quotient. -/

@@ -81,6 +81,7 @@ def toLeviCivitaNum (x : FastLC) : LeviCivitaNum :=
   LeviCivitaNum.ofArray (x.terms.map (fun (e, c) => ({ exp := e, coeff := c } : Term))).toArray
 
 instance : Zero FastLC where zero := zero
+instance : Inhabited FastLC where default := zero
 instance : One FastLC where one := one
 instance : Coe Rat FastLC where coe := ofRat
 
@@ -463,6 +464,16 @@ def truncate (maxTerms : Nat) (x : FastLC) : FastLC :=
 def dropBelow (minExp : Rat) (x : FastLC) : FastLC :=
   ofTerms (x.terms.filter (fun (e, _) => e ≥ minExp))
 
+/-- Truncate relative to the leading exponent `e0`: keep terms with exponent `> e0 - relOrder`,
+    and cap total terms at `maxTerms`. Eliminates high-order series truncation dust after
+    cancellation (e.g. `1 + ε + c·ε¹⁰` truncated to relative order `6` becomes `1 + ε`). -/
+def truncateRel (relOrder : Nat) (x : FastLC) : FastLC :=
+  match x.leadingTerm with
+  | none => zero
+  | some (e0, _) =>
+    let cutoff : Rat := e0 - (relOrder : Rat)
+    ofTerms ((x.terms.filter (fun (e, _) => e > cutoff)).take relOrder)
+
 /-- Fast Newton-Raphson multiplicative inverse (`O(log order)` multiplications),
     returning `.error` on division by zero. -/
 def invNewton (x : FastLC) (order : Nat := 12) : Except String FastLC :=
@@ -474,15 +485,21 @@ def invNewton (x : FastLC) (order : Nat := 12) : Except String FastLC :=
     if (u - 1).isZero then
       .ok invLead
     else
-      -- Compute number of Newton doublings: 2^steps ≥ order
+      -- Determine fundamental infinitesimal step `d = -exp(u - 1) > 0`
+      let stepD : Rat :=
+        match (u - 1).leadingTerm with
+        | some (ed, _) => if ed < 0 then -ed else 1
+        | none => 1
       Id.run do
         let mut y : FastLC := 1
         let mut prec : Nat := 2
         while prec < order * 2 do
           let stepTerms := min prec order
-          y := (newtonStep u y).truncate stepTerms
+          let minE : Rat := -(stepD * (stepTerms : Rat))
+          y := ((newtonStep u y).dropBelow minE).truncate stepTerms
           prec := prec * 2
-        y := (newtonStep u y).truncate order
+        let finalMinE : Rat := -(stepD * ((order : Rat) - 1))
+        y := ((newtonStep u y).dropBelow finalMinE).truncate order
         return .ok ((invLead * y).truncate order)
 
 /-- Divide two `FastLC` numbers using Newton-Raphson inversion. -/
@@ -499,8 +516,8 @@ instance : Inv FastLC where
 instance : Div FastLC where
   div x y := (x * y⁻¹).truncate 12
 
-/-- Convert a finite `Float` to a clean bounded-denominator `Rat` (up to `10^12` precision). -/
-def ratOfFloat (f : Float) (scale : Nat := 1000000000000) : Rat :=
+/-- Convert a finite `Float` to a clean bounded-denominator `Rat` (up to `10^10` precision). -/
+def ratOfFloat (f : Float) (scale : Nat := 10000000000) : Rat :=
   if f.isNaN || f.isInf then 0
   else
     let scaled := (f * Float.ofNat scale).round
@@ -509,12 +526,24 @@ def ratOfFloat (f : Float) (scale : Nat := 1000000000000) : Rat :=
       else Int.ofNat (scaled.toUInt64.toNat)
     mkRat num scale
 
-/-- Convert a `Rat` to `Float`. -/
+/-- Overflow-safe conversion of an arbitrary-precision `Rat` to IEEE-754 `Float`
+    using bit-length normalization (never overflows to `Inf / Inf = NaN` even when
+    numerator and denominator exceed `2^1024`). -/
 def ratToFloat (r : Rat) : Float :=
-  let numF :=
-    if r.num < 0 then -(Float.ofNat r.num.natAbs)
-    else Float.ofNat r.num.natAbs
-  numF / Float.ofNat r.den
+  if r.num == 0 then 0.0
+  else
+    let a := r.num.natAbs
+    let b := r.den
+    let la := a.log2
+    let lb := b.log2
+    let sa := if la > 53 then la - 53 else 0
+    let sb := if lb > 53 then lb - 53 else 0
+    let aTop := a >>> sa
+    let bTop := b >>> sb
+    let mant := (Float.ofNat aTop) / (Float.ofNat bTop)
+    let expDiff : Int := Int.ofNat sa - Int.ofNat sb
+    let scaled := Float.scaleB mant expDiff
+    if r.num < 0 then -scaled else scaled
 
 /-- **Finite Specialization (`H ↦ N`, `ε ↦ 1/N`)**:
     Replace the unlimited constant `H` with a chosen large finite number `bigN > 0`,

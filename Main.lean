@@ -1,93 +1,167 @@
-import LeanInf.LeviCivitaNum
-import LeanInf.Basic
-import LeanInf.Parser
+import LeanInf
+
 open LeanInf
-open LeviCivitaNum
 
+private def parseFloatArg (s : String) (default : Float) : Float :=
+  match Calc.parseExpr s with
+  | .ok e =>
+    match Calc.evalExpr (Calc.defaultEnv 6) e with
+    | .ok (.num v, _) =>
+      match v.stdPart with
+      | some r => FastLC.ratToFloat r
+      | none => default
+    | _ => default
+  | _ => default
 
-/-- d represents epsilon since it's easier to type.-/
-def testCases : List (String × Option LeviCivitaNum) := [
-  ("1+ε", some lc[1, ε]),
-  ("1/ε", some lc[H]),
-  ("ε+ε", some lc[2ε]),
-  ("d^2", some lc[ε^2]),
-  ("2+2", some lc[4]),
-  ("2ε", none),
-  ("1+ε", some lc[1, ε]),
-  ("1/ε", some lc[H]),
-  ("ε+ε", some lc[2ε]),
-  ("a=6*7;a+5", some lc[47]),
-  ("zzz=1;zzz==1", some lc[1]),
-  ("f x=x^2;f(f(2))", some lc[16]),
-  ("(1+ε)^pi", none),
-  ("ε^pi", none),
-  ("[sqrt(ε+ε^2)]^2", some lc[ε^(1/2) , ε^2])
-]
+private def runStepDemo (bigN : Float) (asJson : Bool) : IO Unit := do
+  if asJson then
+    match StepFunction.stepDemoJSON bigN 32 4 with
+    | .ok j => IO.println j
+    | .error e => IO.eprintln s!"Error: {e}"
+  else
+    IO.println s!"=== Nonstandard Step Function L_H(x) = 1 / (1 + exp(-H*x)) ==="
+    IO.println s!"Finite specialization: H ↦ N = {bigN}, ε ↦ 1/N = {1.0 / bigN}\n"
+    match StepFunction.logisticDerivCentral 0 10, StepFunction.logisticDerivClosed 0 10 with
+    | .ok d0, .ok dc0 =>
+      IO.println s!"At x = 0:"
+      IO.println s!"  L_H(0)                    = 1/2"
+      IO.println s!"  Pure AD D_(ε²) L_H(0)     = {d0}"
+      IO.println s!"  Closed form L'_H(0)       = {dc0}"
+      IO.println s!"  Finite eval (H ↦ {bigN}) = {d0.evalFinite bigN}  (exact N/4 = {bigN / 4.0})\n"
+    | _, _ => IO.eprintln "Failed computing derivative at 0"
+    match StepFunction.computeStepGrid bigN 32 4 with
+    | .ok (samples, areaLC) =>
+      IO.println "Transition layer x = c·ε (finite x_N = c/N):"
+      IO.println "   c   |   x_N    |   L_N(x_N)   |   LC Derivative L'_H(c·ε)      | evalAt(N)  | N·σ'(c)"
+      IO.println "-------|----------|--------------|--------------------------------|------------|---------"
+      for s in samples do
+        let cf := FastLC.ratToFloat s.c
+        if cf == -4.0 || cf == -2.0 || cf == -1.0 || cf == -0.5 || cf == 0.0 ||
+           cf == 0.5 || cf == 1.0 || cf == 2.0 || cf == 4.0 then
+          IO.println s!" {cf} | {s.xFinite} | {s.stepFinite} | {(s.derivLC.truncate 2).prettyApprox 4} | {s.derivFinite} | {s.derivClassical}"
+      IO.println s!"\nHyperfinite Riemann integral ∑ L'_H(c_k·ε)·(Δc·ε) = {areaLC.prettyApprox 5}"
+      IO.println s!"Finite specialization of area (H ↦ {bigN})         = {areaLC.evalFinite bigN} (exact = 1.0)"
+    | .error e => IO.eprintln s!"Error: {e}"
 
-/-- Entry point.-/
-def main : IO Unit := do
-  -- TODO add printing
-  IO.println "1+d"
+/-- Persistent line-oriented worker for HTTP servers (`eval\t<N>\t<order>\t<expr>` or `step\t<N>`). -/
+private partial def runServeStdio : IO Unit := do
+  let stdin ← IO.getStdin
+  let stdout ← IO.getStdout
+  while true do
+    let line ← stdin.getLine
+    if line.isEmpty then break
+    let trimmed := line.trimAscii.toString
+    if trimmed.isEmpty then continue
+    let parts := trimmed.splitOn "\t"
+    match parts with
+    | "eval" :: nStr :: ordStr :: exprParts =>
+      let expr := String.intercalate "\t" exprParts
+      let bigN := parseFloatArg nStr 100.0
+      let ord := max 4 (min 32 (ordStr.toNat?.getD 10))
+      stdout.putStrLn (Calc.evalToJson expr bigN ord)
+      stdout.flush
+    | "step" :: nStr :: _ =>
+      let bigN := parseFloatArg nStr 100.0
+      match StepFunction.stepDemoJSON bigN 32 4 with
+      | .ok j => stdout.putStrLn j
+      | .error e => stdout.putStrLn ("{\"ok\":false,\"error\":\"" ++ e ++ "\"}")
+      stdout.flush
+    | ["bench"] =>
+      let rows ← Bench.runAllBenchmarks
+      stdout.putStrLn (Bench.rowsToJson rows)
+      stdout.flush
+    | ["ping"] =>
+      stdout.putStrLn "{\"ok\":true,\"engine\":\"lean-inf\",\"lean\":\"4.36.0\"}"
+      stdout.flush
+    | _ =>
+      stdout.putStrLn (Calc.evalToJson trimmed 100.0 10)
+      stdout.flush
 
--- #eval  (p[1ε, 2ε^2, 3ε^3])
--- #eval! lc[1,H,-1,-1]
--- #eval! (lc[H,ε, 2ε^2, 3ε^3] : LeviCivitaNum).toPoly
+private partial def runRepl : IO Unit := do
+  IO.println "lean-inf — Levi-Civita Calculator (H = infinite, ε = 1/H). Type :quit to exit."
+  let stdin ← IO.getStdin
+  let stdout ← IO.getStdout
+  let mut env := Calc.defaultEnv 10
+  while true do
+    stdout.putStr "inf> "
+    stdout.flush
+    let line ← stdin.getLine
+    if line.isEmpty then break
+    let trimmed := line.trimAscii.toString
+    if trimmed == ":quit" || trimmed == ":q" || trimmed == "exit" then break
+    if trimmed.isEmpty then continue
+    match Calc.parseExpr trimmed with
+    | .error e => IO.println s!"Parse error: {e}"
+    | .ok expr =>
+      match Calc.evalExpr env expr with
+      | .error e => IO.println s!"Error: {e}"
+      | .ok (val, env') =>
+        env := env'
+        IO.println s!"  = {val}"
 
--- Test cases based on the image
--- We'll use the given approximations and verify they square to the original value
--- and that their inverses are close to what's given in the image
+private def usage : String :=
+  "lean-inf — Computable Levi-Civita Numbers in Lean 4\n" ++
+  "Usage:\n" ++
+  "  inf eval <expr> [--N <val>] [--order <k>] [--json]\n" ++
+  "  inf test\n" ++
+  "  inf bench [--json]\n" ++
+  "  inf step-demo [--N <val>] [--json]\n" ++
+  "  inf repl\n" ++
+  "  inf serve-stdio\n"
 
--- Test case for √(1 + ε)
--- #eval! let approx := lc[1, 0.5 ε, -0.125 ε^2, 0.0625 ε^3, -0.0390625 ε^4]
---       let squared := approx * approx
---       let inverse := 1 / approx
---       (squared, inverse)
--- Should be close to (1 + ε, 1 - 0.5ε + 0.375ε^2 - 0.3125ε^3)
-
--- Test case for √(1 - 0.5ε)
--- #eval! let approx := lc[1, -0.25 ε, -0.03125 ε^2, -0.015625 ε^3, -0.009765625 ε^4]
---       let squared := approx * approx
---       let inverse := 1 / approx
---       (squared, inverse)
--- Should be close to (1 - 0.5ε, 1 + 0.25ε + 0.1875ε^2 + 0.15625ε^3)
-
--- Test case for √(1 + ε + ε^2)
--- #eval! let approx := lc[1, 0.5 ε, 0.125 ε^2, 0.0625 ε^3, 0.0390625 ε^4]
---       let squared := approx * approx
---       let inverse := 1 / approx
---       (squared, inverse)
--- Should be close to (1 + ε + ε^2, 1 - 0.5 ε + 0.125 ε^2 + 0.0625 ε^3)
-
--- Test case for √(1 - 0.5ε + 0.375ε^2 - 0.3125ε^3)
--- #eval! let approx := lc[1, -0.25ε, -0.03125ε^2, -0.015625ε^3, -0.009765625ε^4]
---       let squared := approx * approx
---       let inverse := 1 / approx
---       (squared, inverse)
--- Should be close to (1 - 0.5ε + 0.375ε^2 - 0.3125ε^3, 1 + 0.25ε + 0.1875ε^2 + 0.15625ε^3)
-
--- Test case for √(2 - 0.2813ε^3)
--- #eval! let approx := lc[1.4142135623730950488, -0.0078125ε^3]  -- √2 - 0.0078125ε^3
---       let squared := approx * approx
---       dbg_trace s!"squared: {squared}"
---       let inverse := 1 / approx
---       (squared * inverse)
--- Should be close to (2 - 0.2813ε^3, 1/√2 + 0.00276ε^3)
-
--- Additional test case for √(2 + ε)
--- #eval! let approx := lc[1.4142135623730950488, 0.3535533905932737622ε, -0.0441941738241592203ε^2, 0.0220970869120796101ε^3, -0.0138106793200497563ε^4]
---       let squared := approx * approx
---       let inverse := 1 / approx
---       (squared, inverse)
--- Should be close to (2 + ε, 1/2 - ε/(4√2) + 3ε^2/(32√2) - 5ε^3/(128√2))
--- #eval! lc[1, H, -H]
-
-
-structure LC where
-  finite : Rat
-  /-- powers of H. MUST have positive keys -/
-  infinite : Std.HashMap Rat Rat
-  /-- powers of ε. MUST have negative keys -/
-  infinitesimal : Std.HashMap Rat Rat
-
-  _pf_infinite : infinite.keys.all (fun x => x > 0) := sorry
-  -- _pf_infinitesimal : infinitesimal.keys.all (fun x => x < 0) := sorry
+/-- CLI entry point for the `inf` executable. -/
+def main (args : List String) : IO UInt32 := do
+  match args with
+  | [] | ["--help"] | ["-h"] =>
+    IO.println usage
+    return 0
+  | ["test"] =>
+    let ok ← TestSuite.runAndPrint
+    return if ok then 0 else 1
+  | "bench" :: rest =>
+    let asJson := rest.contains "--json"
+    Bench.runAndPrint asJson
+    return 0
+  | "step-demo" :: rest =>
+    let asJson := rest.contains "--json"
+    let bigN :=
+      match rest.dropWhile (· != "--N") with
+      | "--N" :: v :: _ => parseFloatArg v 100.0
+      | _ => 100.0
+    runStepDemo bigN asJson
+    return 0
+  | ["repl"] =>
+    runRepl
+    return 0
+  | ["serve-stdio"] =>
+    runServeStdio
+    return 0
+  | "eval" :: expr :: rest =>
+    let asJson := rest.contains "--json"
+    let bigN :=
+      match rest.dropWhile (· != "--N") with
+      | "--N" :: v :: _ => parseFloatArg v 100.0
+      | _ => 100.0
+    let ord :=
+      match rest.dropWhile (· != "--order") with
+      | "--order" :: v :: _ => max 4 (min 32 (v.toNat?.getD 10))
+      | _ => 10
+    if asJson then
+      IO.println (Calc.evalToJson expr bigN ord)
+      return 0
+    else
+      match Calc.evalString expr ord with
+      | .ok (.bool b) =>
+        IO.println (if b then "true" else "false")
+        return 0
+      | .ok (.num x) =>
+        IO.println s!"exact  : {x.pretty}"
+        IO.println s!"approx : {x.prettyApprox}"
+        IO.println s!"eval({bigN}) : {x.evalFinite bigN}"
+        return 0
+      | .error e =>
+        IO.eprintln s!"Error: {e}"
+        return 1
+  | _ =>
+    IO.eprintln usage
+    return 1

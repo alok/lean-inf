@@ -470,7 +470,7 @@ partial def evalExpr (env : Env) : Expr → Except String (CalcVal × Env)
         | none => .error "coeff exponent must be a standard rational"
       | "trunc", [x, nVal] =>
         match nVal.stdPart with
-        | some r => return (.num (x.truncate r.num.toNat), curEnv)
+        | some r => return (.num (x.truncateRel r.num.toNat), curEnv)
         | none => .error "trunc count must be a standard natural number"
       | "exp", [x] =>
         return (.num (← FastLC.expOrder x curEnv.order), curEnv)

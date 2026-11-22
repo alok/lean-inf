@@ -193,6 +193,7 @@ def insert (x : LeviCivitaNum) (e : Exponent) (c : Coeff) : LeviCivitaNum :=
 def zero : LeviCivitaNum := mkParts 0 0 0
 
 instance : Zero LeviCivitaNum where zero := zero
+instance : Inhabited LeviCivitaNum where default := zero
 
 /-- The multiplicative identity `1`. -/
 def one : LeviCivitaNum := mkParts 1 0 0
