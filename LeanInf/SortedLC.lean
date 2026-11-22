@@ -964,6 +964,253 @@ theorem coeffOf_mulTree (xs ys : TermList) (e : Rat) :
     · rw [coeffOf_mergeAll, sumCoeffOf_scaleRuns]
     · rw [coeffOf_mergeAll, sumCoeffOf_scaleRuns, coeffOf_mulNaiveTerms_comm]
 
+/-! ### Contiguous `Array`-Backed Sparse Merge (`@[csimp]` Kernel for `mulTree`, Rung 4) -/
+
+/-- Append `src[i..]` onto `acc` in a tight contiguous array push loop. -/
+def appendSliceArr (src : Array (Rat × Rat)) (i : Nat) (acc : Array (Rat × Rat)) :
+    Array (Rat × Rat) :=
+  if hi : i < src.size then
+    appendSliceArr src (i + 1) (acc.push src[i])
+  else
+    acc
+termination_by src.size - i
+
+private theorem appendSliceArr_toList (src : Array (Rat × Rat)) (i : Nat)
+    (acc : Array (Rat × Rat)) :
+    (appendSliceArr src i acc).toList = acc.toList ++ src.toList.drop i := by
+  unfold appendSliceArr
+  split
+  · rename_i hi
+    rw [appendSliceArr_toList src (i + 1) (acc.push src[i]), Array.toList_push, List.append_assoc]
+    have hdrop : src.toList.drop i = src[i] :: src.toList.drop (i + 1) := by
+      have hi' : i < src.toList.length := by simpa using hi
+      simpa using List.drop_eq_getElem_cons hi'
+    rw [hdrop]
+    rfl
+  · rename_i hge
+    have hdrop : src.toList.drop i = [] := List.drop_eq_nil_of_le (by simp; omega)
+    simp [hdrop]
+termination_by src.size - i
+
+/-- Contiguous array scaling loop (zero cons cells, zero `List.reverse`). -/
+def scaleTermArrLoop (e0 c0 : Rat) (ys : Array (Rat × Rat)) (i : Nat)
+    (acc : Array (Rat × Rat)) : Array (Rat × Rat) :=
+  if hi : i < ys.size then
+    let p := ys[i]
+    scaleTermArrLoop e0 c0 ys (i + 1) (acc.push (ratAddFast e0 p.1, ratMulFast c0 p.2))
+  else
+    acc
+termination_by ys.size - i
+
+/-- Contiguous `Array` version of `scaleTerm`. -/
+@[inline] def scaleTermArr (e0 c0 : Rat) (ys : Array (Rat × Rat)) : Array (Rat × Rat) :=
+  if c0.num == 0 then #[]
+  else scaleTermArrLoop e0 c0 ys 0 (Array.mkEmpty ys.size)
+
+private theorem scaleTermArrLoop_toList (e0 c0 : Rat) (ys : Array (Rat × Rat)) (i : Nat)
+    (acc : Array (Rat × Rat)) :
+    (scaleTermArrLoop e0 c0 ys i acc).toList =
+      acc.toList ++ (ys.toList.drop i).map (fun (ey, cy) => (e0 + ey, c0 * cy)) := by
+  unfold scaleTermArrLoop
+  split
+  · rename_i hi
+    dsimp only
+    rw [scaleTermArrLoop_toList e0 c0 ys (i + 1), Array.toList_push, List.append_assoc]
+    have hdrop : ys.toList.drop i = ys[i] :: ys.toList.drop (i + 1) := by
+      have hi' : i < ys.toList.length := by simpa using hi
+      simpa using List.drop_eq_getElem_cons hi'
+    rw [hdrop, List.map_cons, ratAddFast_eq, ratMulFast_eq]
+    rfl
+  · rename_i hge
+    have hdrop : ys.toList.drop i = [] := List.drop_eq_nil_of_le (by simp; omega)
+    simp [hdrop]
+termination_by ys.size - i
+
+private theorem scaleTermArr_toList (e0 c0 : Rat) (ys : Array (Rat × Rat)) :
+    (scaleTermArr e0 c0 ys).toList = scaleTerm e0 c0 ys.toList := by
+  unfold scaleTermArr scaleTerm
+  rw [rat_num_beq_zero_eq]
+  split
+  · rfl
+  · simpa using scaleTermArrLoop_toList e0 c0 ys 0 (Array.mkEmpty ys.size)
+
+/-- Contiguous two-pointer sorted merge over `Array (Rat × Rat)` (zero cons cells, zero reverse). -/
+def mergeArrLoop (xs ys : Array (Rat × Rat)) (i j : Nat) (acc : Array (Rat × Rat)) :
+    Array (Rat × Rat) :=
+  if hi : i < xs.size then
+    if hj : j < ys.size then
+      let px := xs[i]
+      let py := ys[j]
+      match ratCmpFast px.1 py.1 with
+      | .gt => mergeArrLoop xs ys (i + 1) j (acc.push px)
+      | .lt => mergeArrLoop xs ys i (j + 1) (acc.push py)
+      | .eq =>
+        let s := ratAddFast px.2 py.2
+        if s.num == 0 then mergeArrLoop xs ys (i + 1) (j + 1) acc
+        else mergeArrLoop xs ys (i + 1) (j + 1) (acc.push (px.1, s))
+    else
+      appendSliceArr xs i acc
+  else
+    appendSliceArr ys j acc
+termination_by (xs.size - i) + (ys.size - j)
+
+/-- Contiguous `Array` version of `addMerge`. -/
+@[inline] def mergeArr (xs ys : Array (Rat × Rat)) : Array (Rat × Rat) :=
+  mergeArrLoop xs ys 0 0 (Array.mkEmpty (xs.size + ys.size))
+
+private theorem mergeArrLoop_toList (xs ys : Array (Rat × Rat)) (i j : Nat)
+    (acc : Array (Rat × Rat)) :
+    (mergeArrLoop xs ys i j acc).toList =
+      acc.toList ++ addMerge (xs.toList.drop i) (ys.toList.drop j) := by
+  unfold mergeArrLoop
+  split
+  · rename_i hi
+    have hxdrop : xs.toList.drop i = xs[i] :: xs.toList.drop (i + 1) := by
+      have hi' : i < xs.toList.length := by simpa using hi
+      simpa using List.drop_eq_getElem_cons hi'
+    split
+    · rename_i hj
+      have hydrop : ys.toList.drop j = ys[j] :: ys.toList.drop (j + 1) := by
+        have hj' : j < ys.toList.length := by simpa using hj
+        simpa using List.drop_eq_getElem_cons hj'
+      dsimp only
+      rcases hpx : xs[i] with ⟨ex, cx⟩
+      rcases hpy : ys[j] with ⟨ey, cy⟩
+      rw [hpx] at hxdrop
+      rw [hpy] at hydrop
+      cases hcmp : ratCmpFast ex ey with
+      | gt =>
+        have hgt : ex > ey := (ratCmpFast_gt _ _).mp hcmp
+        rw [mergeArrLoop_toList xs ys (i + 1) j (acc.push (ex, cx)), Array.toList_push,
+            List.append_assoc, hxdrop, hydrop]
+        simp only [addMerge, hgt, ↓reduceIte]
+        rfl
+      | lt =>
+        have hlt : ey > ex := (ratCmpFast_lt _ _).mp hcmp
+        have hngt : ¬ (ex > ey) := by grind
+        rw [mergeArrLoop_toList xs ys i (j + 1) (acc.push (ey, cy)), Array.toList_push,
+            List.append_assoc, hxdrop, hydrop]
+        simp only [addMerge, hngt, hlt, ↓reduceIte]
+        rfl
+      | eq =>
+        have hngt : ¬ (ex > ey) := by
+          intro h; have := (ratCmpFast_gt _ _).mpr h; rw [hcmp] at this; cases this
+        have hnlt : ¬ (ey > ex) := by
+          intro h; have := (ratCmpFast_lt _ _).mpr h; rw [hcmp] at this; cases this
+        rw [hxdrop, hydrop]
+        simp only [addMerge, hngt, hnlt, ↓reduceIte, ratAddFast_eq, rat_num_beq_zero_eq]
+        split
+        · exact mergeArrLoop_toList xs ys (i + 1) (j + 1) acc
+        · rw [mergeArrLoop_toList xs ys (i + 1) (j + 1), Array.toList_push, List.append_assoc]
+          rfl
+    · rename_i hnj
+      have hydrop : ys.toList.drop j = [] := List.drop_eq_nil_of_le (by simp; omega)
+      rw [appendSliceArr_toList, hydrop, hxdrop]
+      simp [addMerge]
+  · rename_i hni
+    have hxdrop : xs.toList.drop i = [] := List.drop_eq_nil_of_le (by simp; omega)
+    rw [appendSliceArr_toList, hxdrop]
+    simp [addMerge]
+termination_by (xs.size - i) + (ys.size - j)
+
+private theorem mergeArr_toList (xs ys : Array (Rat × Rat)) :
+    (mergeArr xs ys).toList = addMerge xs.toList ys.toList := by
+  simpa [mergeArr] using mergeArrLoop_toList xs ys 0 0 (Array.mkEmpty (xs.size + ys.size))
+
+/-- Pairwise balanced-tree merge pass over contiguous `Array` runs. -/
+def mergePairsArr : List (Array (Rat × Rat)) → List (Array (Rat × Rat))
+  | [] => []
+  | [x] => [x]
+  | x :: y :: rest => mergeArr x y :: mergePairsArr rest
+
+private theorem mergePairsArr_length_lt {l : List (Array (Rat × Rat))} (h : 1 < l.length) :
+    (mergePairsArr l).length < l.length := by
+  match l with
+  | [] => simp at h
+  | [_] => simp at h
+  | _ :: _ :: rest =>
+    simp only [mergePairsArr, List.length_cons]
+    cases rest with
+    | nil => simp [mergePairsArr]
+    | cons a rest2 =>
+      cases rest2 with
+      | nil => simp [mergePairsArr]
+      | cons b rest3 =>
+        have hrec := mergePairsArr_length_lt (l := a :: b :: rest3) (by simp)
+        omega
+
+private theorem mergePairsArr_map_toList (l : List (Array (Rat × Rat))) :
+    (mergePairsArr l).map Array.toList = mergePairs (l.map Array.toList) := by
+  match l with
+  | [] => rfl
+  | [x] => rfl
+  | x :: y :: rest =>
+    simp only [mergePairsArr, List.map_cons, mergePairs, mergeArr_toList,
+      mergePairsArr_map_toList rest]
+
+/-- Balanced binary-tree merge over contiguous `Array` runs. -/
+def mergeAllArr : List (Array (Rat × Rat)) → Array (Rat × Rat)
+  | [] => #[]
+  | [x] => x
+  | x :: y :: rest =>
+    have : (mergePairsArr (x :: y :: rest)).length < (x :: y :: rest).length :=
+      mergePairsArr_length_lt (by simp)
+    mergeAllArr (mergePairsArr (x :: y :: rest))
+termination_by l => l.length
+
+private theorem mergeAllArr_toList (l : List (Array (Rat × Rat))) :
+    (mergeAllArr l).toList = mergeAll (l.map Array.toList) := by
+  match l with
+  | [] => simp [mergeAllArr, mergeAll]
+  | [x] => simp [mergeAllArr, mergeAll]
+  | x :: y :: rest =>
+    have : (mergePairsArr (x :: y :: rest)).length < (x :: y :: rest).length :=
+      mergePairsArr_length_lt (by simp)
+    rw [mergeAllArr, mergeAllArr_toList (mergePairsArr (x :: y :: rest)),
+        mergePairsArr_map_toList]
+    simp [mergeAll]
+termination_by l.length
+
+/-- Compiled contiguous-`Array` kernel for `mulTree` (zero intermediate cons cells or reverses). -/
+def mulTreeArr (xs ys : TermList) : TermList :=
+  match xs, ys with
+  | [], _ => []
+  | _, [] => []
+  | [(ex, cx)], ys => scaleTerm ex cx ys
+  | xs, [(ey, cy)] => scaleTerm ey cy xs
+  | xs, ys =>
+    if xs.length ≤ ys.length then
+      let ysArr := ys.toArray
+      (mergeAllArr (xs.map (fun (ex, cx) => scaleTermArr ex cx ysArr))).toList
+    else
+      let xsArr := xs.toArray
+      (mergeAllArr (ys.map (fun (ey, cy) => scaleTermArr ey cy xsArr))).toList
+
+/-- **`@[csimp]` Verified Kernel Replacement (`mulTree → mulTreeArr`)**:
+    Replaces linked-list balanced merging inside `mulTree` with contiguous `Array` merging
+    at compile time while keeping all proofs completely unchanged. -/
+@[csimp] theorem mulTree_eq_mulTreeArr : @mulTree = @mulTreeArr := by
+  funext xs ys
+  unfold mulTree mulTreeArr
+  split
+  · rfl
+  · rfl
+  · rfl
+  · rfl
+  · split
+    · rw [mergeAllArr_toList, List.map_map]
+      congr 1
+      apply List.map_congr_left
+      intro p _
+      rcases p with ⟨ex, cx⟩
+      simpa using (scaleTermArr_toList ex cx ys.toArray).symm
+    · rw [mergeAllArr_toList, List.map_map]
+      congr 1
+      apply List.map_congr_left
+      intro p _
+      rcases p with ⟨ey, cy⟩
+      simpa using (scaleTermArr_toList ey cy xs.toArray).symm
+
 /-! ### Sorting & Truncation Helpers -/
 
 /-- Insert a single `(e, c)` pair into a canonical term list while preserving `WF`. -/
