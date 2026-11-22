@@ -460,47 +460,54 @@ instance : DecidableRel (@LE.le FastLC _) :=
 def truncate (maxTerms : Nat) (x : FastLC) : FastLC :=
   ⟨TermList.truncate maxTerms x.terms, TermList.truncate_wf maxTerms x.wf⟩
 
-/-- Keep only terms with exponent `≥ minExp` (preserves `WF`). -/
+/-- Keep only terms with exponent `≥ minExp` in `O(k)` time (preserves `WF`, zero re-sorting). -/
 def dropBelow (minExp : Rat) (x : FastLC) : FastLC :=
-  ofTerms (x.terms.filter (fun (e, _) => e ≥ minExp))
+  ⟨TermList.takeWhileGe minExp x.terms, TermList.takeWhileGe_wf minExp x.wf⟩
+
+/-- Exact coefficient specification of `dropBelow`. -/
+theorem coeff_dropBelow (minExp : Rat) (x : FastLC) (e : Rat) :
+    (x.dropBelow minExp).coeff e = if e ≥ minExp then x.coeff e else 0 :=
+  TermList.coeffOf_takeWhileGe minExp x.wf e
 
 /-- Truncate relative to the leading exponent `e0`: keep terms with exponent `> e0 - relOrder`,
-    and cap total terms at `maxTerms`. Eliminates high-order series truncation dust after
-    cancellation (e.g. `1 + ε + c·ε¹⁰` truncated to relative order `6` becomes `1 + ε`). -/
+    and cap total terms at `relOrder`, in `O(k)` time without re-sorting. -/
 def truncateRel (relOrder : Nat) (x : FastLC) : FastLC :=
   match x.leadingTerm with
   | none => zero
   | some (e0, _) =>
     let cutoff : Rat := e0 - (relOrder : Rat)
-    ofTerms ((x.terms.filter (fun (e, _) => e > cutoff)).take relOrder)
+    ⟨TermList.takeWhileGt cutoff relOrder x.terms, TermList.takeWhileGt_wf cutoff relOrder x.wf⟩
 
-/-- Fast Newton-Raphson multiplicative inverse (`O(log order)` multiplications),
-    returning `.error` on division by zero. -/
+/-- Fast precision-sliced Newton-Raphson multiplicative inverse (`O(log order)` multiplications),
+    using residual form `y' = y + y * (1 - u * y)` and `O(k)` `dropBelow` slicing.
+    Returns `.error` on division by zero. -/
 def invNewton (x : FastLC) (order : Nat := 12) : Except String FastLC :=
   match x.leadingTerm with
   | none => .error "Division by zero"
   | some (e0, c0) =>
-    let invLead := mono (-e0) c0⁻¹
-    let u := invLead * x -- normalized: leading term is (0, 1), tail is infinitesimal
-    if (u - 1).isZero then
-      .ok invLead
-    else
-      -- Determine fundamental infinitesimal step `d = -exp(u - 1) > 0`
-      let stepD : Rat :=
-        match (u - 1).leadingTerm with
-        | some (ed, _) => if ed < 0 then -ed else 1
-        | none => 1
+    let isUnitLead := e0.num == 0 && c0.num == 1 && c0.den == 1
+    let invLead := if isUnitLead then (1 : FastLC) else mono (-e0) c0⁻¹
+    let u := if isUnitLead then x else invLead * x
+    let delta := u - 1
+    match delta.leadingTerm with
+    | none => .ok invLead
+    | some (ed, _) =>
+      let stepD : Rat := if ed < 0 then -ed else 1
       Id.run do
         let mut y : FastLC := 1
-        let mut prec : Nat := 2
-        while prec < order * 2 do
-          let stepTerms := min prec order
-          let minE : Rat := -(stepD * (stepTerms : Rat))
-          y := ((newtonStep u y).dropBelow minE).truncate stepTerms
-          prec := prec * 2
-        let finalMinE : Rat := -(stepD * ((order : Rat) - 1))
-        y := ((newtonStep u y).dropBelow finalMinE).truncate order
-        return .ok ((invLead * y).truncate order)
+        let mut prec : Nat := 1
+        while prec < order do
+          let next := min (prec * 2) order
+          let minE : Rat := -(stepD * ((next : Rat) - 1))
+          let uStep := u.dropBelow minE
+          let uy := (uStep * y).dropBelow minE
+          let res := (1 : FastLC) - uy
+          if res.isZero then break
+          let corr := (y * res).dropBelow minE
+          y := (y + corr).truncate next
+          prec := next
+        let out := if isUnitLead then y else invLead * y
+        return .ok (out.truncate order)
 
 /-- Divide two `FastLC` numbers using Newton-Raphson inversion. -/
 def divNewton (x y : FastLC) (order : Nat := 12) : Except String FastLC := do

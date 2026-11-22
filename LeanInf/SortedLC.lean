@@ -1051,6 +1051,143 @@ theorem truncate_wf {ts : TermList} (n : Nat) (h : WF ts) : WF (truncate n ts) :
       rcases p with ⟨e, c⟩
       exact ⟨h.1, allLt_take k h.2.1, ih k h.2.2⟩
 
+/-- `O(k)` prefix drop of terms below `minExp` on a canonical strictly-descending `TermList`.
+    Replaces `O(k log k)` `normalize ∘ filter` in `FastLC.dropBelow`. -/
+def takeWhileGe (minExp : Rat) : TermList → TermList
+  | [] => []
+  | (e, c) :: rest =>
+    if e ≥ minExp then (e, c) :: takeWhileGe minExp rest else []
+
+/-- Tail-recursive single-comparison loop compiled via `@[csimp]` for `takeWhileGe`. -/
+def takeWhileGeTRLoop (minExp : Rat) : TermList → TermList → TermList
+  | [], acc => acc.reverse
+  | (e, c) :: rest, acc =>
+    match ratCmpFast e minExp with
+    | .lt => acc.reverse
+    | _ => takeWhileGeTRLoop minExp rest ((e, c) :: acc)
+
+/-- Compiled tail-recursive entry point for `takeWhileGe`. -/
+@[inline] def takeWhileGeTR (minExp : Rat) (ts : TermList) : TermList :=
+  takeWhileGeTRLoop minExp ts []
+
+private theorem takeWhileGeTRLoop_eq (minExp : Rat) (ts acc : TermList) :
+    takeWhileGeTRLoop minExp ts acc = acc.reverse ++ takeWhileGe minExp ts := by
+  induction ts generalizing acc with
+  | nil => simp [takeWhileGeTRLoop, takeWhileGe]
+  | cons p rest ih =>
+    rcases p with ⟨e, c⟩
+    simp only [takeWhileGeTRLoop, takeWhileGe]
+    cases hcmp : ratCmpFast e minExp with
+    | lt =>
+      have hlt : minExp > e := (ratCmpFast_lt e minExp).mp hcmp
+      have hnge : ¬ (e ≥ minExp) := by grind
+      simp [hnge]
+    | gt =>
+      have hgt : e > minExp := (ratCmpFast_gt e minExp).mp hcmp
+      have hge : e ≥ minExp := by grind
+      simp only [hge, ↓reduceIte]
+      rw [ih ((e, c) :: acc), List.reverse_cons, List.append_assoc]
+      rfl
+    | eq =>
+      have hnlt : ¬ (minExp > e) := by
+        intro h; have := (ratCmpFast_lt e minExp).mpr h; rw [hcmp] at this; cases this
+      have hge : e ≥ minExp := by grind
+      simp only [hge, ↓reduceIte]
+      rw [ih ((e, c) :: acc), List.reverse_cons, List.append_assoc]
+      rfl
+
+/-- **`@[csimp]` Verified Kernel Replacement (`takeWhileGe → takeWhileGeTR`)**. -/
+@[csimp] theorem takeWhileGe_eq_takeWhileGeTR : @takeWhileGe = @takeWhileGeTR := by
+  funext minExp ts
+  simpa [takeWhileGeTR] using (takeWhileGeTRLoop_eq minExp ts []).symm
+
+/-- `takeWhileGe` preserves `AllLt`. -/
+theorem takeWhileGe_allLt {b : Rat} (minExp : Rat) {ts : TermList} (h : AllLt b ts) :
+    AllLt b (takeWhileGe minExp ts) := by
+  induction ts with
+  | nil => trivial
+  | cons p rest ih =>
+    rcases p with ⟨e, c⟩
+    simp only [takeWhileGe]
+    split
+    · exact ⟨h.1, ih h.2⟩
+    · trivial
+
+/-- `takeWhileGe` preserves canonical well-formedness. -/
+theorem takeWhileGe_wf (minExp : Rat) {ts : TermList} (h : WF ts) :
+    WF (takeWhileGe minExp ts) := by
+  induction ts with
+  | nil => trivial
+  | cons p rest ih =>
+    rcases p with ⟨e, c⟩
+    simp only [takeWhileGe]
+    split
+    · exact ⟨h.1, takeWhileGe_allLt minExp h.2.1, ih h.2.2⟩
+    · trivial
+
+/-- Exact coefficient specification of `takeWhileGe` on canonical `WF` term lists. -/
+theorem coeffOf_takeWhileGe (minExp : Rat) {ts : TermList} (h : WF ts) (e : Rat) :
+    coeffOf (takeWhileGe minExp ts) e = if e ≥ minExp then coeffOf ts e else 0 := by
+  induction ts with
+  | nil => simp [takeWhileGe, coeffOf]
+  | cons p rest ih =>
+    rcases p with ⟨e0, c0⟩
+    simp only [takeWhileGe]
+    split
+    · rename_i he0
+      simp only [coeffOf, ih h.2.2]
+      by_cases hge : e ≥ minExp
+      · simp [hge]
+      · have hne : (e0 == e) = false := by
+          cases hb : (e0 == e)
+          · rfl
+          · have : e0 = e := eq_of_beq hb; grind
+        simp [hge, hne, Rat.zero_add]
+    · rename_i hnge
+      simp only [coeffOf]
+      by_cases hge : e ≥ minExp
+      · have hgt : e > e0 := by grind
+        simp only [hge, ↓reduceIte]
+        exact (coeffOf_eq_zero_of_gt_head h hgt).symm
+      · simp [hge]
+
+/-- `O(k)` prefix take of at most `maxTerms` terms strictly above `cutoff` (for `truncateRel`). -/
+def takeWhileGt (cutoff : Rat) : Nat → TermList → TermList
+  | 0, _ => []
+  | _, [] => []
+  | n + 1, (e, c) :: rest =>
+    if e > cutoff then (e, c) :: takeWhileGt cutoff n rest else []
+
+/-- `takeWhileGt` preserves `AllLt`. -/
+theorem takeWhileGt_allLt {b : Rat} (cutoff : Rat) (n : Nat) {ts : TermList} (h : AllLt b ts) :
+    AllLt b (takeWhileGt cutoff n ts) := by
+  induction ts generalizing n with
+  | nil => cases n <;> trivial
+  | cons p rest ih =>
+    cases n with
+    | zero => trivial
+    | succ k =>
+      rcases p with ⟨e, c⟩
+      simp only [takeWhileGt]
+      split
+      · exact ⟨h.1, ih k h.2⟩
+      · trivial
+
+/-- `takeWhileGt` preserves canonical well-formedness. -/
+theorem takeWhileGt_wf (cutoff : Rat) (n : Nat) {ts : TermList} (h : WF ts) :
+    WF (takeWhileGt cutoff n ts) := by
+  induction ts generalizing n with
+  | nil => cases n <;> trivial
+  | cons p rest ih =>
+    cases n with
+    | zero => trivial
+    | succ k =>
+      rcases p with ⟨e, c⟩
+      simp only [takeWhileGt]
+      split
+      · exact ⟨h.1, takeWhileGt_allLt cutoff k h.2.1, ih k h.2.2⟩
+      · trivial
+
 end TermList
 
 end LeanInf
