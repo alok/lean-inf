@@ -17,7 +17,9 @@ const PORT = Number(process.env.PORT ?? "4420");
 const HOST = process.env.HOST ?? "127.0.0.1";
 const REPO_ROOT = resolve(import.meta.dir, "..");
 const INF_BIN = join(REPO_ROOT, ".lake", "build", "bin", "inf");
-const BLOG_UI_PATH = resolve(process.env.HOME ?? "", "blog", "inf", "index.html");
+const BLOG_INF_DIR = resolve(process.env.HOME ?? "", "blog", "inf");
+const BLOG_UI_PATH = join(BLOG_INF_DIR, "index.html");
+const CODE_SHOTS_DIR = join(BLOG_INF_DIR, "code-shots");
 const BENCH_CACHE_PATH = join(REPO_ROOT, "plots", "bench_results.json");
 
 const startedAt = Date.now();
@@ -187,6 +189,25 @@ const server = Bun.serve({
           }
         }
         return jsonResponse(benchCache);
+      }
+
+      if (path.startsWith("/code-shots/") && (req.method === "GET" || req.method === "HEAD")) {
+        const name = path.slice("/code-shots/".length);
+        if (!/^[A-Za-z0-9_-]+\.png$/.test(name)) {
+          return jsonResponse(JSON.stringify({ ok: false, error: `Not found: ${path}` }), 404);
+        }
+        const assetPath = join(CODE_SHOTS_DIR, name);
+        if (!existsSync(assetPath)) {
+          return jsonResponse(JSON.stringify({ ok: false, error: `Not found: ${path}` }), 404);
+        }
+        const data = readFileSync(assetPath);
+        return new Response(req.method === "HEAD" ? null : data, {
+          headers: corsHeaders({
+            "Content-Type": "image/png",
+            "Content-Length": String(data.byteLength),
+            "Cache-Control": "public, max-age=300",
+          }),
+        });
       }
 
       if ((path === "/" || path === "/index.html") && req.method === "GET") {
