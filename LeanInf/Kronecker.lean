@@ -1516,5 +1516,339 @@ theorem coeffOf_powFastGrid {xs ts : TermList} {n : Nat} (h : powFastGrid xs n =
             · cases h
           · cases h
 
+/-! #### 9. Verified In-Array Newton Inversion (`aInvNewtonStep` & `aInvNewtonInt`, Rung 9) -/
+
+/-- Entry `i` of the polynomial residual `1 - uy`. -/
+@[inline] def aResAt (uy : Array Int) (i : Nat) : Int :=
+  (if i == 0 then (1 : Int) else 0) - aCoeff uy i
+
+/-- Find the first index `i < next` where the Newton residual `1 - u*y` is nonzero
+    (returns `next` if `u*y ≡ 1 (mod t^next)`). -/
+def aResFirstNonzero (uy : Array Int) (next i : Nat) : Nat :=
+  if _h : i < next then
+    if aResAt uy i == 0 then aResFirstNonzero uy next (i + 1)
+    else i
+  else next
+termination_by next - i
+
+private theorem aResFirstNonzero_zero_before (uy : Array Int) (next i j : Nat)
+    (hij : i ≤ j) (hj : j < aResFirstNonzero uy next i) :
+    aResAt uy j = 0 := by
+  unfold aResFirstNonzero at hj
+  split at hj
+  · split at hj
+    · rename_i hr0
+      by_cases hjeq : j = i
+      · subst hjeq; exact eq_of_beq hr0
+      · exact aResFirstNonzero_zero_before uy next (i + 1) j (by omega) hj
+    · omega
+  · omega
+termination_by next - i
+
+/-- Extract the shifted residual `(1 - uy)[p .. next)` into a contiguous `Array Int`. -/
+def aExtractNegResLoop (uy : Array Int) (p next i : Nat) (acc : Array Int) : Array Int :=
+  if _h : i < next then
+    aExtractNegResLoop uy p next (i + 1) (acc.push (aResAt uy i))
+  else acc
+termination_by next - i
+
+/-- Extract `(1 - uy)[p .. next)` with preallocated capacity `next - p`. -/
+@[inline] def aExtractNegRes (uy : Array Int) (p next : Nat) : Array Int :=
+  aExtractNegResLoop uy p next p (Array.mkEmpty (next - p))
+
+private theorem aCoeff_aExtractNegResLoop (uy : Array Int) (p next i : Nat) (acc : Array Int)
+    (hp : p ≤ i) (hi : i ≤ next) (hacc : acc.size = i - p) (k : Nat) :
+    aCoeff (aExtractNegResLoop uy p next i acc) k =
+      if k < i - p then aCoeff acc k
+      else if p + k < next then aResAt uy (p + k)
+      else 0 := by
+  unfold aExtractNegResLoop
+  split
+  · rename_i hilt
+    rw [aCoeff_aExtractNegResLoop uy p next (i + 1) _ (by omega) (by omega) (by simp [hacc]; omega) k]
+    by_cases hk : k < i - p
+    · have hk1 : k < i + 1 - p := by omega
+      simp [hk, hk1, aCoeff_push, hacc]
+    · by_cases heq : k = i - p
+      · subst heq
+        have hk1 : i - p < i + 1 - p := by omega
+        have hpk : p + (i - p) = i := by omega
+        simp [hk, hk1, aCoeff_push, hacc, hpk, hilt]
+      · have hk1 : ¬ (k < i + 1 - p) := by omega
+        simp [hk, hk1]
+  · rename_i hge
+    have hni : next = i := by omega
+    subst hni
+    by_cases hk : k < next - p
+    · simp [hk]
+    · have hnot : ¬ (p + k < next) := by omega
+      simp [hk, hnot, aCoeff_of_ge (by omega : acc.size ≤ k)]
+termination_by next - i
+
+private theorem aCoeff_aExtractNegRes (uy : Array Int) (p next : Nat) (hp : p ≤ next) (k : Nat) :
+    aCoeff (aExtractNegRes uy p next) k =
+      if p + k < next then aResAt uy (p + k) else 0 := by
+  unfold aExtractNegRes
+  rw [aCoeff_aExtractNegResLoop uy p next p _ (Nat.le_refl _) hp (by simp) k]
+  simp
+
+/-- Single-pass `y + t^p * corr` truncated to length `next`. -/
+def aAddShiftedLoop (y corr : Array Int) (p next i : Nat) (acc : Array Int) : Array Int :=
+  if _h : i < next then
+    let v := aCoeff y i + (if i < p then 0 else aCoeff corr (i - p))
+    aAddShiftedLoop y corr p next (i + 1) (acc.push v)
+  else acc
+termination_by next - i
+
+/-- Combine `y + t^p * corr` modulo `t^next` in one allocation. -/
+@[inline] def aAddShifted (y corr : Array Int) (p next : Nat) : Array Int :=
+  aAddShiftedLoop y corr p next 0 (Array.mkEmpty next)
+
+private theorem aCoeff_aAddShiftedLoop (y corr : Array Int) (p next i : Nat) (acc : Array Int)
+    (hi : i ≤ next) (hacc : acc.size = i) (k : Nat) :
+    aCoeff (aAddShiftedLoop y corr p next i acc) k =
+      if k < i then aCoeff acc k
+      else if k < next then aCoeff y k + (if k < p then 0 else aCoeff corr (k - p))
+      else 0 := by
+  unfold aAddShiftedLoop
+  split
+  · rename_i hilt
+    dsimp only
+    rw [aCoeff_aAddShiftedLoop y corr p next (i + 1) _ (by omega) (by simp [hacc]) k]
+    by_cases hk : k < i
+    · have hk1 : k < i + 1 := by omega
+      simp [hk, hk1, aCoeff_push, hacc]
+    · by_cases heq : k = i
+      · subst heq
+        simp [hilt, aCoeff_push, hacc]
+      · have hk1 : ¬ (k < i + 1) := by omega
+        simp [hk, hk1]
+  · rename_i hge
+    have hni : next = i := by omega
+    subst hni
+    by_cases hk : k < next
+    · simp [hk]
+    · simp [hk, aCoeff_of_ge (by omega : acc.size ≤ k)]
+termination_by next - i
+
+private theorem aCoeff_aAddShifted (y corr : Array Int) (p next k : Nat) :
+    aCoeff (aAddShifted y corr p next) k =
+      if k < next then aCoeff y k + (if k < p then 0 else aCoeff corr (k - p))
+      else 0 := by
+  unfold aAddShifted
+  rw [aCoeff_aAddShiftedLoop y corr p next 0 _ (Nat.zero_le _) (by simp) k]
+  simp
+
+/-- One precision-sliced in-array Newton reciprocal step `y' = y + y * (1 - u * y) (mod t^next)`.
+    Skips the leading `p` vanishing residual terms and truncates `y` to `next - p`, halving the
+    degree of the correction multiplication while remaining 100% inside `Array Int`.
+    Returns `(y', converged)`. -/
+def aInvNewtonStep (u y : Array Int) (next : Nat) : Array Int × Bool :=
+  let uStep := if u.size ≤ next then u else u.extract 0 next
+  let uy := aMulIntFast 32 uStep y
+  let p := aResFirstNonzero uy next 0
+  if p ≥ next then (y, true)
+  else
+    let len := next - p
+    let yTrunc := if y.size ≤ len then y else y.extract 0 len
+    let resTail := aExtractNegRes uy p next
+    let corr := aMulIntFast 32 yTrunc resTail
+    (aAddShifted y corr p next, false)
+
+private theorem kr_rat_ofInt_zero : Rat.ofInt 0 = 0 := rfl
+private theorem kr_rat_ofInt_one : Rat.ofInt 1 = 1 := rfl
+private theorem kr_rat_ofInt_add (a b : Int) : Rat.ofInt (a + b) = Rat.ofInt a + Rat.ofInt b := by
+  rw [← TermList.mkRat_one, ← TermList.mkRat_one, ← TermList.mkRat_one,
+      Rat.mkRat_add_mkRat _ _ (by decide) (by decide)]
+  simp
+private theorem kr_rat_ofInt_sub (a b : Int) : Rat.ofInt (a - b) = Rat.ofInt a - Rat.ofInt b := by
+  have h := kr_rat_ofInt_add (a - b) b
+  rw [Int.sub_add_cancel] at h
+  grind
+
+private theorem kr_aCoeff_extract_zero (a : Array Int) (hi j : Nat) (hj : j < hi) :
+    aCoeff (a.extract 0 hi) j = aCoeff a j := by
+  unfold aCoeff
+  by_cases hja : j < a.size
+  · have hlt : j < min hi a.size := by omega
+    simp [hja, hlt]
+  · have hge : ¬ (j < min hi a.size) := by omega
+    simp [hja, hge]
+
+private theorem kr_dCoeff_map_ofInt (arr : Array Int) (k : Nat) :
+    dCoeff (arr.toList.map Rat.ofInt) k = Rat.ofInt (aCoeff arr k) := by
+  have h := dCoeff_map_mkRat arr 1 k
+  have hmap : arr.toList.map (fun c => mkRat c 1) = arr.toList.map Rat.ofInt := by
+    apply List.map_congr_left; intro c _; exact TermList.mkRat_one c
+  rw [hmap, TermList.mkRat_one] at h
+  exact h
+
+private theorem dCoeff_dMulSchoolbook_trunc_left (a₁ a₂ b : List Rat) (n : Nat)
+    (ha : ∀ j, j < n → dCoeff a₁ j = dCoeff a₂ j) (k : Nat) (hk : k < n) :
+    dCoeff (dMulSchoolbook a₁ b) k = dCoeff (dMulSchoolbook a₂ b) k := by
+  induction a₁ generalizing a₂ n k with
+  | nil =>
+    induction a₂ generalizing n k with
+    | nil => rfl
+    | cons y ys ih2 =>
+      simp only [dMulSchoolbook, dCoeff_dAdd, dCoeff_dScale]
+      have hy0 : y = 0 := by have := ha 0 (by omega); simpa using this.symm
+      rw [hy0, Rat.zero_mul, Rat.zero_add]
+      cases k with
+      | zero => rfl
+      | succ k' =>
+        simp only [dCoeff_cons_succ]
+        have hys : ∀ j, j < n - 1 → dCoeff [] j = dCoeff ys j := fun j hj => by
+          have := ha (j + 1) (by omega); simpa using this
+        exact ih2 (n - 1) hys k' (by omega)
+  | cons x xs ih =>
+    cases a₂ with
+    | nil =>
+      simp only [dMulSchoolbook, dCoeff_dAdd, dCoeff_dScale]
+      have hx0 : x = 0 := by have := ha 0 (by omega); simpa using this
+      rw [hx0, Rat.zero_mul, Rat.zero_add]
+      cases k with
+      | zero => rfl
+      | succ k' =>
+        simp only [dCoeff_cons_succ]
+        have hxs : ∀ j, j < n - 1 → dCoeff xs j = dCoeff [] j := fun j hj => by
+          have := ha (j + 1) (by omega); simpa using this
+        exact ih [] (n - 1) hxs k' (by omega)
+    | cons y ys =>
+      simp only [dMulSchoolbook, dCoeff_dAdd, dCoeff_dScale]
+      have hxy : x = y := by have := ha 0 (by omega); simpa using this
+      rw [hxy]
+      cases k with
+      | zero => rfl
+      | succ k' =>
+        simp only [dCoeff_cons_succ]
+        have htail : ∀ j, j < n - 1 → dCoeff xs j = dCoeff ys j := fun j hj => by
+          have := ha (j + 1) (by omega); simpa using this
+        rw [ih ys (n - 1) htail k' (by omega)]
+
+private theorem dCoeff_dMulSchoolbook_trunc_right (a b₁ b₂ : List Rat) (n : Nat)
+    (hb : ∀ j, j < n → dCoeff b₁ j = dCoeff b₂ j) (k : Nat) (hk : k < n) :
+    dCoeff (dMulSchoolbook a b₁) k = dCoeff (dMulSchoolbook a b₂) k := by
+  induction a generalizing n k with
+  | nil => rfl
+  | cons x xs ih =>
+    simp only [dMulSchoolbook, dCoeff_dAdd, dCoeff_dScale, hb k hk]
+    cases k with
+    | zero => rfl
+    | succ k' =>
+      simp only [dCoeff_cons_succ]
+      rw [ih (n - 1) (fun j hj => hb j (by omega)) k' (by omega)]
+
+/-- **Verified Truncated Newton Step Equivalence Theorem (zero `sorry`)**:
+    For every coefficient index `k < next`, `aInvNewtonStep u y next` computes the exact same
+    coefficient as the full polynomial Newton update `y + y * (1 - u * y)`. -/
+theorem aCoeff_aInvNewtonStep (u y : Array Int) (next k : Nat) (hk : k < next) :
+    Rat.ofInt (aCoeff (aInvNewtonStep u y next).1 k) =
+      dCoeff (dAdd (y.toList.map Rat.ofInt)
+        (dMulSchoolbook (y.toList.map Rat.ofInt)
+          (dSub [1] (dMulSchoolbook (u.toList.map Rat.ofInt) (y.toList.map Rat.ofInt))))) k := by
+  let uStep := if u.size ≤ next then u else u.extract 0 next
+  let uy := aMulIntFast 32 uStep y
+  let p := aResFirstNonzero uy next 0
+  have huStep : ∀ j, j < next →
+      dCoeff (uStep.toList.map Rat.ofInt) j = dCoeff (u.toList.map Rat.ofInt) j := by
+    intro j hj
+    rw [kr_dCoeff_map_ofInt, kr_dCoeff_map_ofInt]
+    dsimp only [uStep]
+    split
+    · rfl
+    · rw [kr_aCoeff_extract_zero u next j hj]
+  have huy : ∀ j, j < next →
+      Rat.ofInt (aCoeff uy j) =
+        dCoeff (dMulSchoolbook (u.toList.map Rat.ofInt) (y.toList.map Rat.ofInt)) j := fun j hj => by
+    dsimp only [uy]
+    rw [aCoeff_aMulIntFast]
+    exact dCoeff_dMulSchoolbook_trunc_left _ _ _ next huStep j hj
+  have hres_eq : ∀ j, j < next →
+      dCoeff (dSub [1] (dMulSchoolbook (u.toList.map Rat.ofInt) (y.toList.map Rat.ofInt))) j =
+        Rat.ofInt (aResAt uy j) := fun j hj => by
+    rw [dCoeff_dSub, ← huy j hj, aResAt, kr_rat_ofInt_sub]
+    cases j with
+    | zero => simp [dCoeff, kr_rat_ofInt_one]
+    | succ j' => simp [dCoeff, kr_rat_ofInt_zero]
+  change Rat.ofInt (aCoeff (if p ≥ next then (y, true) else
+    (aAddShifted y (aMulIntFast 32 (if y.size ≤ next - p then y else y.extract 0 (next - p))
+      (aExtractNegRes uy p next)) p next, false)).1 k) = _
+  by_cases hdone : p ≥ next
+  · simp only [hdone, ↓reduceIte]
+    have hzero_res : ∀ j, j < next →
+        dCoeff (dSub [1] (dMulSchoolbook (u.toList.map Rat.ofInt) (y.toList.map Rat.ofInt))) j = 0 := by
+      intro j hj
+      rw [hres_eq j hj]
+      have hz := aResFirstNonzero_zero_before uy next 0 j (Nat.zero_le _) (by omega)
+      rw [hz, kr_rat_ofInt_zero]
+    rw [dCoeff_dAdd, kr_dCoeff_map_ofInt,
+        dCoeff_dMulSchoolbook_trunc_right _ _ [] next (fun j hj => by simpa using hzero_res j hj) k hk]
+    have hmul_nil : ∀ xs : List Rat, ∀ j, dCoeff (dMulSchoolbook xs []) j = 0 := by
+      intro xs
+      induction xs with
+      | nil => intro j; rfl
+      | cons x xs ih =>
+        intro j
+        simp only [dMulSchoolbook, dCoeff_dAdd, dCoeff_dScale, dCoeff_nil, Rat.mul_zero, Rat.zero_add]
+        cases j with
+        | zero => rfl
+        | succ j' => exact ih j'
+    rw [hmul_nil, Rat.add_zero]
+  · simp only [hdone, ↓reduceIte]
+    have hp_lt : p < next := by omega
+    let len := next - p
+    let yTrunc := if y.size ≤ len then y else y.extract 0 len
+    let resTail := aExtractNegRes uy p next
+    rw [aCoeff_aAddShifted]
+    simp only [hk, ↓reduceIte, kr_rat_ofInt_add, dCoeff_dAdd, kr_dCoeff_map_ofInt]
+    congr 1
+    have hshift_res : ∀ j, j < next →
+        dCoeff (dSub [1] (dMulSchoolbook (u.toList.map Rat.ofInt) (y.toList.map Rat.ofInt))) j =
+          dCoeff (dShift p (resTail.toList.map Rat.ofInt)) j := by
+      intro j hj
+      rw [hres_eq j hj, dCoeff_dShift]
+      by_cases hjp : j < p
+      · have hz := aResFirstNonzero_zero_before uy next 0 j (Nat.zero_le _) hjp
+        simp [hjp, hz, kr_rat_ofInt_zero]
+      · have hpk : p + (j - p) = j := by omega
+        simp only [hjp, ↓reduceIte]
+        rw [kr_dCoeff_map_ofInt, aCoeff_aExtractNegRes uy p next (by omega), hpk]
+        simp only [hj, ↓reduceIte]
+    rw [dCoeff_dMulSchoolbook_trunc_right _ _ _ next hshift_res k hk,
+        dCoeff_dMulSchoolbook_shift_right, dCoeff_dShift]
+    by_cases hkp : k < p
+    · simp [hkp, kr_rat_ofInt_zero]
+    · simp only [hkp, ↓reduceIte]
+      rw [aCoeff_aMulIntFast]
+      have hyTrunc : ∀ j, j < len →
+          dCoeff (yTrunc.toList.map Rat.ofInt) j = dCoeff (y.toList.map Rat.ofInt) j := by
+        intro j hj
+        rw [kr_dCoeff_map_ofInt, kr_dCoeff_map_ofInt]
+        dsimp only [yTrunc]
+        split
+        · rfl
+        · rw [kr_aCoeff_extract_zero y len j hj]
+      exact dCoeff_dMulSchoolbook_trunc_left _ _ _ len hyTrunc (k - p) (by omega)
+
+/-- Precision-doubling in-array Newton reciprocal loop (`prec = 1, 2, 4, ..., order`). -/
+def aInvNewtonIntLoop (u y : Array Int) (prec order : Nat) (hprec : 0 < prec) : Array Int :=
+  if hlt : prec < order then
+    let next := min (prec * 2) order
+    let step := aInvNewtonStep u y next
+    if step.2 then step.1
+    else
+      have hnext : 0 < next := by omega
+      have hdec : order - next < order - prec := by omega
+      aInvNewtonIntLoop u step.1 next order hnext
+  else y
+termination_by order - prec
+
+/-- Verified in-array Newton-Raphson reciprocal of a unit-lead integer polynomial `u` modulo `t^order`
+    (`O(log order)` multiplications, zero intermediate `TermList` allocations). -/
+def aInvNewtonInt (u : Array Int) (order : Nat) : Array Int :=
+  if order == 0 then #[]
+  else aInvNewtonIntLoop u #[1] 1 order (by decide)
+
 end Kronecker
 end LeanInf

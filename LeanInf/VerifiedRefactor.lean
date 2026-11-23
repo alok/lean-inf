@@ -535,6 +535,8 @@ def truncateRel (relOrder : Nat) (x : FastLC) : FastLC :=
 
 /-- Fast precision-sliced Newton-Raphson multiplicative inverse (`O(log order)` multiplications),
     using residual form `y' = y + y * (1 - u * y)` and `O(k)` `dropBelow` slicing.
+    Routes integer-coefficient grid inputs through verified in-array `aInvNewtonInt` (zero
+    intermediate `TermList` allocations and half-degree shifted residual multiplies).
     Returns `.error` on division by zero. -/
 def invNewton (x : FastLC) (order : Nat := 12) : Except String FastLC :=
   match x.leadingTerm with
@@ -548,21 +550,34 @@ def invNewton (x : FastLC) (order : Nat := 12) : Except String FastLC :=
     | none => .ok invLead
     | some (ed, _) =>
       let stepD : Rat := if ed < 0 then -ed else 1
-      Id.run do
-        let mut y : FastLC := 1
-        let mut prec : Nat := 1
-        while prec < order do
-          let next := min (prec * 2) order
-          let minE : Rat := -(stepD * ((next : Rat) - 1))
-          let uStep := u.dropBelow minE
-          let uy := (uStep * y).dropBelow minE
-          let res := (1 : FastLC) - uy
-          if res.isZero then break
-          let corr := (y * res).dropBelow minE
-          y := (y + corr).truncate next
-          prec := next
-        let out := if isUnitLead then y else invLead * y
-        return .ok (out.truncate order)
+      let fastRes : Option FastLC :=
+        if hstep : stepD > 0 then
+          let maxMinE : Rat := -(stepD * ((order : Rat) - 1))
+          match Karatsuba.extractIntGrid 0 stepD order (u.dropBelow maxMinE).terms with
+          | some iu =>
+            let yArr := Kronecker.aInvNewtonInt iu order
+            let y : FastLC := ⟨Karatsuba.fromIntGrid 0 stepD yArr, Karatsuba.fromIntGrid_wf hstep yArr⟩
+            some (if isUnitLead then y else (invLead * y).truncate order)
+          | none => none
+        else none
+      match fastRes with
+      | some out => .ok out
+      | none =>
+        Id.run do
+          let mut y : FastLC := 1
+          let mut prec : Nat := 1
+          while prec < order do
+            let next := min (prec * 2) order
+            let minE : Rat := -(stepD * ((next : Rat) - 1))
+            let uStep := u.dropBelow minE
+            let uy := (uStep * y).dropBelow minE
+            let res := (1 : FastLC) - uy
+            if res.isZero then break
+            let corr := (y * res).dropBelow minE
+            y := (y + corr).truncate next
+            prec := next
+          let out := if isUnitLead then y else invLead * y
+          return .ok (out.truncate order)
 
 /-- Divide two `FastLC` numbers using Newton-Raphson inversion. -/
 def divNewton (x y : FastLC) (order : Nat := 12) : Except String FastLC := do
