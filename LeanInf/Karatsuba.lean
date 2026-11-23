@@ -1257,6 +1257,68 @@ def extractIntGridLoop (step : Rat) : Nat → Rat → TermList → Array Int →
 @[inline] def extractIntGrid (e0 step : Rat) (fuel : Nat) (ts : TermList) : Option (Array Int) :=
   extractIntGridLoop step fuel e0 ts (Array.mkEmpty ts.length)
 
+/-- Classified result of single-pass integer-coefficient grid extraction, distinguishing
+    non-integer coefficients (`den ≠ 1`) from genuinely off-grid (sparse) exponents. -/
+inductive IntGridResult where
+  /-- All terms align on `e0 - k * step` with integer coefficients (`den == 1`). -/
+  | ok (arr : Array Int)
+  /-- Encountered a non-integer coefficient (`den ≠ 1`); rational grid path may still apply. -/
+  | nonInt
+  /-- Encountered an off-grid exponent or fuel exhaustion; skip rational grid walk immediately. -/
+  | offGrid
+
+/-- Single-pass classified integer grid extraction loop. -/
+def extractIntGridClassifiedLoop (step : Rat) :
+    Nat → Rat → TermList → Array Int → IntGridResult
+  | _, _, [], acc => .ok acc
+  | 0, _, _ :: _, _ => .offGrid
+  | fuel + 1, curExp, (e, c) :: rest, acc =>
+    if c.den != 1 then .nonInt
+    else
+      match ratCmpFast e curExp with
+      | .eq => extractIntGridClassifiedLoop step fuel (ratSubFast curExp step) rest (acc.push c.num)
+      | .lt => extractIntGridClassifiedLoop step fuel (ratSubFast curExp step) ((e, c) :: rest) (acc.push 0)
+      | .gt => .offGrid
+
+/-- Classified entry point for single-pass `Array Int` grid extraction. -/
+@[inline] def extractIntGridClassified (e0 step : Rat) (fuel : Nat) (ts : TermList) : IntGridResult :=
+  extractIntGridClassifiedLoop step fuel e0 ts (Array.mkEmpty ts.length)
+
+private theorem extractIntGridClassifiedLoop_ok (step : Rat) (fuel : Nat) (curExp : Rat)
+    (ts : TermList) (acc res : Array Int)
+    (h : extractIntGridClassifiedLoop step fuel curExp ts acc = .ok res) :
+    extractIntGridLoop step fuel curExp ts acc = some res := by
+  induction fuel generalizing curExp ts acc with
+  | zero =>
+    cases ts with
+    | nil =>
+      simp only [extractIntGridClassifiedLoop, IntGridResult.ok.injEq] at h
+      subst h; rfl
+    | cons _ _ => simp [extractIntGridClassifiedLoop] at h
+  | succ fuel' ih =>
+    cases ts with
+    | nil =>
+      simp only [extractIntGridClassifiedLoop, IntGridResult.ok.injEq] at h
+      subst h; rfl
+    | cons p rest =>
+      rcases p with ⟨ep, cp⟩
+      simp only [extractIntGridClassifiedLoop] at h
+      simp only [extractIntGridLoop]
+      split at h
+      · simp at h
+      · rename_i hden
+        simp only [hden, Bool.false_eq_true, ↓reduceIte]
+        cases hcmp : ratCmpFast ep curExp <;> simp only [hcmp] at h
+        · exact ih _ _ _ h
+        · exact ih _ _ _ h
+        · simp at h
+
+/-- Soundness bridge: `.ok arr` from `extractIntGridClassified` implies `extractIntGrid = some arr`. -/
+theorem extractIntGridClassified_ok {e0 step : Rat} {fuel : Nat} {ts : TermList} {arr : Array Int}
+    (h : extractIntGridClassified e0 step fuel ts = .ok arr) :
+    extractIntGrid e0 step fuel ts = some arr :=
+  extractIntGridClassifiedLoop_ok step fuel e0 ts (Array.mkEmpty ts.length) arr h
+
 private theorem fromGridAux_append_singleton (e0 step : Rat) (idx : Nat) (ds : List Rat) (x : Rat) :
     fromGridAux e0 step idx (ds ++ [x]) =
       fromGridAux e0 step idx ds ++

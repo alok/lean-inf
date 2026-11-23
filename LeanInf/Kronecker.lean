@@ -749,17 +749,27 @@ def mulFastKronecker (xs ys : TermList) (cutoff : Nat := 16) : TermList :=
     | (ex0, _) :: _, (ey0, _) :: _, some step =>
       if step > 0 then
         let fuel := 2 * (xs.length + ys.length) + 16
-        match extractIntGrid ex0 step fuel xs, extractIntGrid ey0 step fuel ys with
-        | some ia, some ib =>
-          fromIntGrid (TermList.ratAddFast ex0 ey0) step (aMulIntFast 32 ia ib)
-        | _, _ =>
+        match extractIntGridClassified ex0 step fuel xs with
+        | .ok ia =>
+          match extractIntGridClassified ey0 step fuel ys with
+          | .ok ib =>
+            fromIntGrid (TermList.ratAddFast ex0 ey0) step (aMulIntFast 32 ia ib)
+          | .nonInt =>
+            if xs.length ≥ cutoff && ys.length ≥ cutoff then
+              match extractGridAux ex0 step 0 fuel xs, extractGridAux ey0 step 0 fuel ys with
+              | some da, some db =>
+                fromGrid (TermList.ratAddFast ex0 ey0) step (dMulKaratsuba cutoff da db)
+              | _, _ => TermList.mulTree xs ys
+            else TermList.mulTree xs ys
+          | .offGrid => TermList.mulTree xs ys
+        | .nonInt =>
           if xs.length ≥ cutoff && ys.length ≥ cutoff then
             match extractGridAux ex0 step 0 fuel xs, extractGridAux ey0 step 0 fuel ys with
             | some da, some db =>
               fromGrid (TermList.ratAddFast ex0 ey0) step (dMulKaratsuba cutoff da db)
             | _, _ => TermList.mulTree xs ys
-          else
-            TermList.mulTree xs ys
+          else TermList.mulTree xs ys
+        | .offGrid => TermList.mulTree xs ys
       else TermList.mulTree xs ys
     | _, _, _ => TermList.mulTree xs ys
   else
@@ -775,12 +785,20 @@ theorem mulFastKronecker_wf {xs ys : TermList} (hxs : TermList.WF xs) (hys : Ter
       · rename_i hstep
         dsimp only
         split
-        · exact fromIntGrid_wf hstep _
+        · split
+          · exact fromIntGrid_wf hstep _
+          · split
+            · split
+              · exact fromGrid_wf hstep _
+              · exact TermList.mulTree_wf hxs hys
+            · exact TermList.mulTree_wf hxs hys
+          · exact TermList.mulTree_wf hxs hys
         · split
           · split
             · exact fromGrid_wf hstep _
             · exact TermList.mulTree_wf hxs hys
           · exact TermList.mulTree_wf hxs hys
+        · exact TermList.mulTree_wf hxs hys
       · exact TermList.mulTree_wf hxs hys
     · exact TermList.mulTree_wf hxs hys
   · exact TermList.mulTree_wf hxs hys
@@ -796,35 +814,48 @@ theorem coeffOf_mulFastKronecker (xs ys : TermList) (e : Rat) (cutoff : Nat := 1
       · rename_i hstep
         dsimp only
         split
-        · rename_i ia ib hx hy
-          rw [TermList.ratAddFast_eq, fromIntGrid_eq_fromGrid]
-          unfold fromGrid
-          have hcongr : ∀ k, dCoeff ((aMulIntFast 32 ia ib).toList.map Rat.ofInt) k =
-              dCoeff (dMulSchoolbook (ia.toList.map Rat.ofInt) (ib.toList.map Rat.ofInt)) k := fun k => by
-            have hmap : dCoeff ((aMulIntFast 32 ia ib).toList.map Rat.ofInt) k =
-                Rat.ofInt (aCoeff (aMulIntFast 32 ia ib) k) := by
-              unfold dCoeff aCoeff
-              rw [List.getD_eq_getElem?_getD]
-              split
-              · rename_i h
-                have h1 : k < ((aMulIntFast 32 ia ib).toList.map Rat.ofInt).length := by simpa using h
-                rw [List.getElem?_eq_getElem h1]; simp
-              · rename_i h
-                have h1 : ((aMulIntFast 32 ia ib).toList.map Rat.ofInt).length ≤ k := by simp at h ⊢; omega
-                rw [List.getElem?_eq_none h1]
-                apply Rat.ext <;> simp [Rat.ofInt]
-            rw [hmap]
-            exact aCoeff_aMulIntFast 32 ia ib k
-          rw [coeffOf_fromGridAux_congr 0 hcongr e, coeffOf_fromGridAux_dMulSchoolbook]
-          rw [TermList.coeffOf_mulNaiveTerms_congr_left (fun e' => by simpa [fromGrid] using extractIntGrid_sound hx e'),
-              TermList.coeffOf_mulNaiveTerms_congr_right (fun e' => by simpa [fromGrid] using extractIntGrid_sound hy e')]
-        · split
+        · rename_i ia hx_ok
+          have hx := extractIntGridClassified_ok hx_ok
+          split
+          · rename_i ib hy_ok
+            have hy := extractIntGridClassified_ok hy_ok
+            rw [TermList.ratAddFast_eq, fromIntGrid_eq_fromGrid]
+            unfold fromGrid
+            have hcongr : ∀ k, dCoeff ((aMulIntFast 32 ia ib).toList.map Rat.ofInt) k =
+                dCoeff (dMulSchoolbook (ia.toList.map Rat.ofInt) (ib.toList.map Rat.ofInt)) k := fun k => by
+              have hmap : dCoeff ((aMulIntFast 32 ia ib).toList.map Rat.ofInt) k =
+                  Rat.ofInt (aCoeff (aMulIntFast 32 ia ib) k) := by
+                unfold dCoeff aCoeff
+                rw [List.getD_eq_getElem?_getD]
+                split
+                · rename_i h
+                  have h1 : k < ((aMulIntFast 32 ia ib).toList.map Rat.ofInt).length := by simpa using h
+                  rw [List.getElem?_eq_getElem h1]; simp
+                · rename_i h
+                  have h1 : ((aMulIntFast 32 ia ib).toList.map Rat.ofInt).length ≤ k := by simp at h ⊢; omega
+                  rw [List.getElem?_eq_none h1]
+                  apply Rat.ext <;> simp [Rat.ofInt]
+              rw [hmap]
+              exact aCoeff_aMulIntFast 32 ia ib k
+            rw [coeffOf_fromGridAux_congr 0 hcongr e, coeffOf_fromGridAux_dMulSchoolbook]
+            rw [TermList.coeffOf_mulNaiveTerms_congr_left (fun e' => by simpa [fromGrid] using extractIntGrid_sound hx e'),
+                TermList.coeffOf_mulNaiveTerms_congr_right (fun e' => by simpa [fromGrid] using extractIntGrid_sound hy e')]
           · split
-            · rename_i da db hx hy
-              rw [TermList.ratAddFast_eq]
-              exact coeffOf_fromGrid_dMulKaratsuba hstep cutoff hx hy e
+            · split
+              · rename_i da db hx' hy'
+                rw [TermList.ratAddFast_eq]
+                exact coeffOf_fromGrid_dMulKaratsuba hstep cutoff hx' hy' e
+              · exact TermList.coeffOf_mulTree _ _ e
             · exact TermList.coeffOf_mulTree _ _ e
           · exact TermList.coeffOf_mulTree _ _ e
+        · split
+          · split
+            · rename_i da db hx' hy'
+              rw [TermList.ratAddFast_eq]
+              exact coeffOf_fromGrid_dMulKaratsuba hstep cutoff hx' hy' e
+            · exact TermList.coeffOf_mulTree _ _ e
+          · exact TermList.coeffOf_mulTree _ _ e
+        · exact TermList.coeffOf_mulTree _ _ e
       · exact TermList.coeffOf_mulTree _ _ e
     · exact TermList.coeffOf_mulTree _ _ e
   · exact TermList.coeffOf_mulTree _ _ e

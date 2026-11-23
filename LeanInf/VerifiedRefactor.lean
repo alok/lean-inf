@@ -23,6 +23,17 @@ namespace FastLC
 def coeff (x : FastLC) (e : Rat) : Rat :=
   TermList.coeffOf x.terms e
 
+/-- Compiled early-exit tail-recursive coefficient lookup exploiting canonical descending `WF` order. -/
+@[inline] def coeffWF (x : FastLC) (e : Rat) : Rat :=
+  TermList.coeffOfWF x.terms e
+
+/-- **`@[csimp]` Verified Kernel Replacement (`FastLC.coeff → FastLC.coeffWF`)**:
+    Replaces the `O(n)` non-tail-recursive denotational `coeffOf` scan with `O(k)` early-exit
+    tail-recursive lookup using `x.wf : TermList.WF x.terms`. -/
+@[csimp] theorem coeff_eq_coeffWF : @FastLC.coeff = @FastLC.coeffWF := by
+  funext x e
+  exact (TermList.coeffOfWF_eq_coeffOf x.wf e).symm
+
 /-- Extensionality: two `FastLC` values are equal iff all their coefficients match. -/
 @[ext] theorem ext {x y : FastLC} (h : ∀ e, x.coeff e = y.coeff e) : x = y := by
   cases x; cases y
