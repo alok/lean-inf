@@ -102,7 +102,13 @@ instance : OfNat FastLC n where
 
 instance : OfScientific FastLC where
   ofScientific mantissa exponentSign decimalExponent :=
-    ofRat (OfScientific.ofScientific mantissa exponentSign decimalExponent)
+    let p10 := Nat.pow 10 decimalExponent
+    let r : Rat :=
+      if exponentSign then
+        mkRat (num := Int.ofNat mantissa) (den := p10)
+      else
+        mkRat (num := Int.ofNat (mantissa * p10)) (den := 1)
+    ofRat r
 
 /-! ### Core Verified Arithmetic Operations -/
 
@@ -543,7 +549,7 @@ def invNewton (x : FastLC) (order : Nat := 12) : Except String FastLC :=
   | none => .error "Division by zero"
   | some (e0, c0) =>
     let isUnitLead := e0.num == 0 && c0.num == 1 && c0.den == 1
-    let invLead := if isUnitLead then (1 : FastLC) else mono (-e0) c0⁻¹
+    let invLead := if isUnitLead then (1 : FastLC) else mono (-e0) (Rat.inv c0)
     let u := if isUnitLead then x else invLead * x
     let delta := u - 1
     match delta.leadingTerm with
@@ -666,7 +672,7 @@ def lnOrder (x : FastLC) (order : Nat := 10) : Except String FastLC := do
   let (a0, delta) ← splitFinite x
   if a0 ≤ 0 then
     throw "ln of an infinitesimal is outside the Levi-Civita field"
-  let u := (delta * ofRat a0⁻¹).truncate order
+  let u := (delta * ofRat (Rat.inv a0)).truncate order
   let base : FastLC :=
     if a0 == 1 then 0 else ofRat (ratOfFloat (Float.log (ratToFloat a0)))
   Id.run do
@@ -741,7 +747,7 @@ def powRatOrder (x : FastLC) (r : Rat) (order : Nat := 10) : Except String FastL
       if c0 == 1 then 1
       else ratOfFloat (Float.pow (ratToFloat c0) (ratToFloat r))
     let leadPow := mono (e0 * r) leadCoeff
-    let delta := (mono (-e0) c0⁻¹ * x) - 1
+    let delta := (mono (-e0) (Rat.inv c0) * x) - 1
     if delta.isZero then return leadPow
     Id.run do
       let mut sum : FastLC := 1

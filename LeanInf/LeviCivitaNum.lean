@@ -17,11 +17,11 @@ abbrev Term := LeanInf.TermG Rat
 /-- HashMap from rational exponents to rational coefficients. -/
 abbrev CoeffMap := LeanInf.CoeffMapG Rat
 
-/-- Rational polynomial backed by `Std.HashMap`. -/
-abbrev Polynomial := LeanInf.PolynomialG Rat
+/-- Rational polynomial backed by `Std.HashMap` (namespaced to avoid colliding with Mathlib's `Polynomial`). -/
+abbrev LeanInf.Polynomial := LeanInf.PolynomialG Rat
 
-/-- Scientific literal support for `Rat` coefficients (e.g., `1.25`, `1e-3`). -/
-instance : OfScientific Coeff where
+/-- Scientific literal support for `Rat` coefficients (local to avoid typeclass diamonds with Mathlib's `ℚ`). -/
+local instance : OfScientific Coeff where
   ofScientific mantissa exponentSign decimalExponent :=
     let p10 := Nat.pow 10 decimalExponent
     if exponentSign then
@@ -29,7 +29,7 @@ instance : OfScientific Coeff where
     else
       mkRat (num := (Int.ofNat (mantissa * p10))) (den := 1)
 
-instance : Inv Coeff where
+local instance : Inv Coeff where
   inv := Rat.inv
 
 namespace Format

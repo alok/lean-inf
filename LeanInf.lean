@@ -23,10 +23,3 @@ balanced-tree sparse multiplication, verified Karatsuba multiplication, binary e
 and quadratically convergent Newton-Raphson inversion), automatic differentiation of the
 nonstandard logistic step function, finite specialization (`H ↦ N`), and a full calculator engine.
 -/
-
-namespace LeanInf
-
-/-- Default rational polynomial type alias. -/
-abbrev Polynomial := PolynomialG Rat
-
-end LeanInf
