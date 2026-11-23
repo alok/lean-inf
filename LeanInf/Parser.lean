@@ -78,7 +78,7 @@ private def isIdentChar (c : Char) : Bool :=
 private def parseNatDigits (cs : List Char) : Nat :=
   cs.foldl (fun acc c => acc * 10 + (c.toNat - '0'.toNat)) 0
 
-private def lexNumber (chars : List Char) : Rat × List Char :=
+private def lexNumber (chars : List Char) : Except String (Rat × List Char) :=
   let (intPart, rest1) := chars.span Char.isDigit
   let (fracPart, rest2) :=
     match rest1 with
@@ -86,33 +86,42 @@ private def lexNumber (chars : List Char) : Rat × List Char :=
       let (fd, r) := more.span Char.isDigit
       (fd, r)
     | _ => ([], rest1)
-  let baseNum := parseNatDigits (intPart ++ fracPart)
-  let baseScale : Int := -(Int.ofNat fracPart.length)
-  let (expShift, rest3) : Int × List Char :=
-    match rest2 with
-    | 'e' :: '+' :: d :: more | 'E' :: '+' :: d :: more =>
-      if d.isDigit then
-        let (ed, r) := (d :: more).span Char.isDigit
-        (Int.ofNat (parseNatDigits ed), r)
-      else (0, rest2)
-    | 'e' :: '-' :: d :: more | 'E' :: '-' :: d :: more =>
-      if d.isDigit then
-        let (ed, r) := (d :: more).span Char.isDigit
-        (-(Int.ofNat (parseNatDigits ed)), r)
-      else (0, rest2)
-    | 'e' :: d :: more | 'E' :: d :: more =>
-      if d.isDigit then
-        let (ed, r) := (d :: more).span Char.isDigit
-        (Int.ofNat (parseNatDigits ed), r)
-      else (0, rest2)
-    | _ => (0, rest2)
-  let totalExp : Int := baseScale + expShift
-  let rat : Rat :=
-    if totalExp ≥ 0 then
-      mkRat (Int.ofNat (baseNum * Nat.pow 10 totalExp.toNat)) 1
+  if intPart.length + fracPart.length > 500 then
+    .error "Numeric literal exceeds 500 digits"
+  else
+    let baseNum := parseNatDigits (intPart ++ fracPart)
+    let baseScale : Int := -(Int.ofNat fracPart.length)
+    let (expShift, expTooLarge, rest3) : Int × Bool × List Char :=
+      match rest2 with
+      | 'e' :: '+' :: d :: more | 'E' :: '+' :: d :: more =>
+        if d.isDigit then
+          let (ed, r) := (d :: more).span Char.isDigit
+          if ed.length > 6 then (0, true, r)
+          else (Int.ofNat (parseNatDigits ed), false, r)
+        else (0, false, rest2)
+      | 'e' :: '-' :: d :: more | 'E' :: '-' :: d :: more =>
+        if d.isDigit then
+          let (ed, r) := (d :: more).span Char.isDigit
+          if ed.length > 6 then (0, true, r)
+          else (-(Int.ofNat (parseNatDigits ed)), false, r)
+        else (0, false, rest2)
+      | 'e' :: d :: more | 'E' :: d :: more =>
+        if d.isDigit then
+          let (ed, r) := (d :: more).span Char.isDigit
+          if ed.length > 6 then (0, true, r)
+          else (Int.ofNat (parseNatDigits ed), false, r)
+        else (0, false, rest2)
+      | _ => (0, false, rest2)
+    let totalExp : Int := baseScale + expShift
+    if expTooLarge || totalExp.natAbs > 400 then
+      .error "Numeric literal exponent exceeds limit (|exp| ≤ 400)"
     else
-      mkRat (Int.ofNat baseNum) (Nat.pow 10 totalExp.natAbs)
-  (rat, rest3)
+      let rat : Rat :=
+        if totalExp ≥ 0 then
+          mkRat (Int.ofNat (baseNum * Nat.pow 10 totalExp.toNat)) 1
+        else
+          mkRat (Int.ofNat baseNum) (Nat.pow 10 totalExp.natAbs)
+      .ok (rat, rest3)
 
 /-- Tokenize a calculator input string into a list of tokens. -/
 partial def tokenize (input : String) : Except String (List Token) :=
@@ -120,8 +129,8 @@ partial def tokenize (input : String) : Except String (List Token) :=
     | [] => .ok (acc.reverse ++ [.eof])
     | c :: rest =>
       if c.isWhitespace then go acc rest
-      else if c.isDigit || (c == '.' && match rest with | d :: _ => d.isDigit | _ => false) then
-        let (r, rem) := lexNumber (c :: rest)
+      else if c.isDigit || (c == '.' && match rest with | d :: _ => d.isDigit | _ => false) then do
+        let (r, rem) ← lexNumber (c :: rest)
         go (.num r :: acc) rem
       else if isIdentStart c then
         let (idChars, rem) := (c :: rest).span isIdentChar
@@ -279,7 +288,9 @@ mutual
     if (← peek) == .caret then
       let _ ← bump
       let exp ← parseUnary
-      return .bin .pow base exp
+      match base with
+      | .var "e" => return .call "exp" [exp]
+      | _ => return .bin .pow base exp
     else
       return base
 
@@ -579,13 +590,25 @@ partial def evalExpr (env : Env) : Expr → Except String (CalcVal × Env)
           return (.num p, env2)
         else
           -- General `a^b = exp(b * ln(a))` when `b` has infinitesimal parts
-          let la ← FastLC.lnOrder ln env2.order
-          let p ← FastLC.expOrder (rn * la) env2.order
+          let la ← FastLC.lnOrder ln (env2.order + 1)
+          let prod := (rn * la).truncateRel (env2.order + 1)
+          let p ← FastLC.expOrder prod env2.order
           return (.num p, env2)
       | none =>
-        -- Exponent is infinite (e.g. `(1 + ε)^(1/ε)` = `exp((1/ε) * ln(1 + ε))`)
-        let la ← FastLC.lnOrder ln env2.order
-        let p ← FastLC.expOrder (rn * la) env2.order
+        -- Exponent is infinite (e.g. `(1 + ε)^(1/ε)` = `exp((1/ε) * ln(1 + ε))`):
+        -- lift `lnOrder` by `ceil(max(0, rn.order)) + 1` so multiplying by `H^extra` keeps all
+        -- terms through `ε^(order - 1)` exact (fixes `det_52`).
+        let extra : Nat :=
+          match rn.order with
+          | some e =>
+            if e > 0 then
+              let ceilE : Int := if e.den == 1 then e.num else e.num / (Int.ofNat e.den) + 1
+              min 32 ceilE.toNat
+            else 0
+          | none => 0
+        let la ← FastLC.lnOrder ln (env2.order + extra + 1)
+        let prod := (rn * la).truncateRel (env2.order + 1)
+        let p ← FastLC.expOrder prod env2.order
         return (.num p, env2)
     | .eq => return (.bool (ln == rn), env2)
     | .ne => return (.bool (ln != rn), env2)
@@ -594,7 +617,7 @@ partial def evalExpr (env : Env) : Expr → Except String (CalcVal × Env)
     | .gt => return (.bool ((ln - rn).signum > 0), env2)
     | .ge => return (.bool ((ln - rn).signum ≥ 0), env2)
   | .call name args =>
-    -- Special syntactic forms: `diff(expr, var, at)` and `deriv(fnName, at)`
+    -- Special syntactic forms: `diff(expr, var, at [, step])` and `deriv(fnName, at)`
     if name == "diff" then
       match args with
       | [body, .var param, atExpr] => do
@@ -604,7 +627,19 @@ partial def evalExpr (env : Env) : Expr → Except String (CalcVal × Env)
         let (y0, _) ← evalExpr { env1 with vars := env1.vars.insert param x0 } body
         let d := ((← expectNum y1) - (← expectNum y0)) * FastLC.infH
         return (.num (d.truncate env1.order), env1)
-      | _ => .error "Usage: diff(expr, var, point), e.g., diff(x^4, x, 2)"
+      | [body, .var param, atExpr, stepExpr] => do
+        let (atVal, env1) ← evalExpr env atExpr
+        let x0 ← expectNum atVal
+        let (stepVal, env2) ← evalExpr env1 stepExpr
+        let hVal ← expectNum stepVal
+        if hVal.isZero then
+          throw "diff step size must be nonzero"
+        let (yPlus, _) ← evalExpr { env2 with vars := env2.vars.insert param (x0 + hVal) } body
+        let (yMinus, _) ← evalExpr { env2 with vars := env2.vars.insert param (x0 - hVal) } body
+        let num := (← expectNum yPlus) - (← expectNum yMinus)
+        let d ← FastLC.divNewton num ((2 : FastLC) * hVal) env2.order
+        return (.num d, env2)
+      | _ => .error "Usage: diff(expr, var, point [, step]), e.g., diff(x^4, x, 2)"
     else if name == "deriv" then
       match args with
       | [.var fnName, atExpr] => do
@@ -702,14 +737,30 @@ def evalString (input : String) (order : Nat := 10) : Except String CalcVal := d
 def evalFastLC (input : String) (order : Nat := 10) : Except String FastLC := do
   expectNum (← evalString input order)
 
-private def escapeJsonStr (s : String) : String :=
+private def hexDigit (n : Nat) : Char :=
+  match n % 16 with
+  | 0 => '0' | 1 => '1' | 2 => '2' | 3 => '3'
+  | 4 => '4' | 5 => '5' | 6 => '6' | 7 => '7'
+  | 8 => '8' | 9 => '9' | 10 => 'a' | 11 => 'b'
+  | 12 => 'c' | 13 => 'd' | 14 => 'e' | _ => 'f'
+
+/-- Escape a string for safe embedding inside a JSON string literal (RFC 8259),
+    including `\"`, `\\`, `\n`, `\r`, `\t`, and all control characters `< 0x20`. -/
+def escapeJsonStr (s : String) : String :=
   let rec go (acc : String) : List Char → String
     | [] => acc
     | '"' :: rest => go (acc ++ "\\\"") rest
     | '\\' :: rest => go (acc ++ "\\\\") rest
     | '\n' :: rest => go (acc ++ "\\n") rest
     | '\r' :: rest => go (acc ++ "\\r") rest
-    | c :: rest => go (acc.push c) rest
+    | '\t' :: rest => go (acc ++ "\\t") rest
+    | c :: rest =>
+      let code := c.toNat
+      if code < 0x20 then
+        let esc := "\\u00" ++ String.singleton (hexDigit (code / 16)) ++ String.singleton (hexDigit code)
+        go (acc ++ esc) rest
+      else
+        go (acc.push c) rest
   go "" s.toList
 
 mutual
@@ -723,6 +774,8 @@ mutual
     | .fnDef _ param body => hasFreeVarAux v (param :: bound) body
     | .call "diff" [body, .var param, atExpr] =>
       hasFreeVarAux v (param :: bound) body || hasFreeVarAux v bound atExpr
+    | .call "diff" [body, .var param, atExpr, stepExpr] =>
+      hasFreeVarAux v (param :: bound) body || hasFreeVarAux v bound atExpr || hasFreeVarAux v bound stepExpr
     | .call _ args => hasFreeVarList v bound args
     | .seq stmts => hasFreeVarSeq v bound stmts
   termination_by sizeOf e
@@ -843,6 +896,14 @@ private partial def evalExprFloatAux (fEnv : FloatEnv) : Expr → Option (Float 
         let (y1, _) ← evalExprFloatAux { env1 with vars := env1.vars.insert param (x0 + h) } body
         let (y0, _) ← evalExprFloatAux { env1 with vars := env1.vars.insert param (x0 - h) } body
         return ((y1 - y0) / (2.0 * h), env1)
+      | [body, .var param, atExpr, stepExpr] => do
+        let (x0, env1) ← evalExprFloatAux fEnv atExpr
+        let (hRaw, env2) ← evalExprFloatAux env1 stepExpr
+        let h := if isFiniteFloat hRaw && hRaw.abs > 1e-12 then hRaw.abs
+                 else max 1e-6 (min 1e-4 (1.0 / (env2.bigN * env2.bigN)))
+        let (y1, _) ← evalExprFloatAux { env2 with vars := env2.vars.insert param (x0 + h) } body
+        let (y0, _) ← evalExprFloatAux { env2 with vars := env2.vars.insert param (x0 - h) } body
+        return ((y1 - y0) / (2.0 * h), env2)
       | _ => none
     else if name == "deriv" then
       match args with
@@ -912,13 +973,29 @@ private def dedupSortedFloats (xs : List Float) (tol : Float := 1e-12) : List Fl
   go none [] xs
 
 private def yBounds (pts : Array (Float × Float)) : Float × Float :=
-  if h : pts.size = 0 then (0.0, 1.0)
+  if pts.isEmpty then (0.0, 1.0)
   else
-    let y0 := (pts[0]'(by omega)).2
-    let (lo, hi) := pts.foldl (init := (y0, y0)) fun (mn, mx) (_, y) =>
-      (if y < mn then y else mn, if y > mx then y else mx)
-    if (hi - lo).abs < 1e-12 then (lo - 1.0, hi + 1.0)
-    else (lo, hi)
+    let ys := (pts.map Prod.snd).qsort (fun a b => a < b)
+    let lo := ys[0]!
+    let hi := ys[ys.size - 1]!
+    let fullRange := hi - lo
+    if fullRange.abs < 1e-12 then (lo - 1.0, hi + 1.0)
+    else if ys.size ≥ 20 then
+      let i05 := (ys.size * 5) / 100
+      let i95 := min (ys.size - 1) ((ys.size * 95) / 100)
+      let p05 := ys[i05]!
+      let p95 := ys[i95]!
+      let span90 := p95 - p05
+      if span90 > 0.0 && fullRange > 50.0 * span90 then
+        let pad := 0.25 * span90
+        (p05 - pad, p95 + pad)
+      else
+        (lo, hi)
+    else
+      (lo, hi)
+
+private def jsonFloatOrNull (f : Float) : String :=
+  if isFiniteFloat f then s!"{cleanFloat f}" else "null"
 
 private def formatPointsJson (pts : Array (Float × Float)) : String :=
   "[" ++ String.intercalate "," (pts.toList.map fun (x, y) => s!"[{cleanFloat x},{cleanFloat y}]") ++ "]"
@@ -932,7 +1009,7 @@ private def fnProbePoints : List (String × FastLC) :=
   , ("1", (1 : FastLC)) ]
 
 private def evalFnToJson (input : String) (expr : Expr) (bigN : Float) (order : Nat) : String :=
-  let effN := if bigN > 0.0 then bigN else 100.0
+  let effN := if isFiniteFloat bigN && bigN > 0.0 then bigN else 100.0
   let baseEnv := defaultEnv order
   -- A. Exact Lean 4 FastLC probes at 6 key points
   let probeRes : List (String × Option String × String) :=
@@ -1085,15 +1162,16 @@ def evalToJson (input : String) (bigN : Float := 100.0) (order : Nat := 10) : St
           | some (e, c) =>
             s!"\"{escapeJsonStr (FastLC.mono e c).pretty}\""
           | none => "\"0\""
+        let effN := if isFiniteFloat bigN && bigN > 0.0 then bigN else 100.0
         let termsJson := x.terms.map fun (e, c) =>
           "{" ++
           s!"\"exp\":\"{escapeJsonStr (toString e)}\"," ++
-          s!"\"exp_f\":{FastLC.ratToFloat e}," ++
+          s!"\"exp_f\":{jsonFloatOrNull (FastLC.ratToFloat e)}," ++
           s!"\"coeff\":\"{escapeJsonStr (toString c)}\"," ++
-          s!"\"coeff_f\":{FastLC.ratToFloat c}" ++
+          s!"\"coeff_f\":{jsonFloatOrNull (FastLC.ratToFloat c)}" ++
           "}"
-        let evalN := x.evalFinite bigN
-        let evalNJson := if evalN.isNaN || evalN.isInf then "null" else s!"{evalN}"
+        let evalN := x.evalFinite effN
+        let evalNJson := jsonFloatOrNull evalN
         let kindTag :=
           if x.isZero then "zero"
           else if x.isInfinite then "infinite"
@@ -1110,7 +1188,7 @@ def evalToJson (input : String) (bigN : Float := 100.0) (order : Nat := 10) : St
         s!"\"dominant\":{leadJson}," ++
         s!"\"std_part\":{stdJson}," ++
         s!"\"term_count\":{x.terms.length}," ++
-        s!"\"eval_N\":{bigN}," ++
+        s!"\"eval_N\":{cleanFloat effN}," ++
         s!"\"eval_finite\":{evalNJson}," ++
         "\"terms\":[" ++ String.intercalate "," termsJson ++ "]" ++
         "}"

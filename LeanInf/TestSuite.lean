@@ -326,6 +326,66 @@ def runAllTests : Array TestResult := Id.run do
               (j.splitOn "NaN").length == 1
     r := r.push (check g5 s!"kind=\"fn\" with valid plot points: {fnExpr}" ok)
 
+  -- Group 6: Dual-Audit Math Regressions, Float Bridge, LeviCivitaNum Inverse & DoS Caps
+  let g6 := "Audit Regressions & DoS Hardening"
+  r := r.push (checkEvalEq g6 "(1 - eps^2) / (1 - eps)" "1 + eps" 10)
+  r := r.push (checkEvalBool g6 "(H^2 - 1) / (H - 1) == H + 1" true 10)
+  r := r.push (checkEvalEq g6 "ln(exp(eps))" "eps" 10)
+  -- No garbage tail at ε¹⁰..ε¹² for `ln(1+eps+eps^2/2)` or at ε¹⁰ for `cos(eps+eps^2)`
+  match Calc.evalFastLC "ln(1 + eps + eps^2 / 2)" 10 with
+  | .ok v =>
+    r := r.push (check g6 "ln(1+eps+eps^2/2) has zero garbage tail at ε¹⁰..ε¹²"
+      (v.coeff (-10) == 0 && v.coeff (-11) == 0 && v.coeff (-12) == 0 && v.coeff (-3) == mkRat (-1) 6)
+      s!"got {v}")
+  | .error err => r := r.push (check g6 "ln(1+eps+eps^2/2)" false err)
+  match Calc.evalFastLC "cos(eps + eps^2)" 10 with
+  | .ok v =>
+    r := r.push (check g6 "cos(eps+eps^2) has zero garbage tail at ε¹⁰"
+      (v.coeff (-10) == 0 && v.coeff (-2) == mkRat (-1) 2 && v.coeff (-3) == (-1 : Rat))
+      s!"got {v}")
+  | .error err => r := r.push (check g6 "cos(eps+eps^2)" false err)
+  -- `det_52`: `(1+eps)^(1/eps)` ε⁹ coefficient ≈ -1.083047 (not -0.811219)
+  match Calc.evalFastLC "(1 + eps)^(1 / eps)" 10 with
+  | .ok v =>
+    let c9 := FastLC.ratToFloat (v.coeff (-9))
+    r := r.push (checkApproxFloat g6 "det_52: coeff((1+eps)^(1/eps), -9) ≈ -1.083047" c9 (-1.083047) 1e-4)
+  | .error err => r := r.push (check g6 "det_52 (1+eps)^(1/eps)" false err)
+  -- Exact dyadic `ratOfFloat` & finite `expOrder` guard
+  match Calc.evalFastLC "exp(25)" 10 with
+  | .ok v =>
+    r := r.push (checkApproxFloat g6 "exp(25) ≈ 72004899337.39 (no UInt64 saturation)"
+      (v.evalFinite 100.0) 72004899337.38588 1.0)
+  | .error err => r := r.push (check g6 "exp(25)" false err)
+  r := r.push (checkEvalBool g6 "exp(-25) == 0" false 10)
+  r := r.push (checkEvalError g6 "exp(710)" 10)
+  r := r.push (checkEvalEq g6 "eval(H^3, 10000)" "1000000000000" 10)
+  -- `e^u` desugaring & optional 4th `diff` step argument
+  let eLogJson := Calc.evalToJson "1/(1+e^(-Hx))" 100.0 10
+  r := r.push (check g6 "1/(1+e^(-Hx)) desugars to exp & matches 1/(1+exp(-Hx)) probes"
+    ((eLogJson.splitOn "\"kind\":\"fn\"").length ≥ 2 &&
+     (eLogJson.splitOn "\"exact\":\"f(-1) = 0,  f(0) = 1/2,  f(1) = 1\"").length ≥ 2 &&
+     (eLogJson.splitOn "NaN").length == 1)
+    eLogJson)
+  r := r.push (checkEvalEq g6 "diff(1/(1+exp(-Hx)), x, 0, eps^2)" "dstep(0)" 10)
+  -- DoS exponent / power caps return clean errors instantly
+  for dos in ["1e999999999", "2^1000000000", "9^9^9", "(1+H)^100000", "(1+eps)^99999"] do
+    r := r.push (checkEvalError g6 dos 10)
+  -- JSON control-char escaping & non-finite `bigN` guard
+  let tabJson := Calc.evalToJson "1\t+\t1" (1.0 / 0.0) 10
+  r := r.push (check g6 "evalToJson escapes \\t and guards non-finite bigN"
+    ((tabJson.splitOn "\\t").length ≥ 3 &&
+     (tabJson.splitOn "inf").length == 1 &&
+     (tabJson.splitOn "\"eval_N\":100").length ≥ 2)
+    tabJson)
+  -- `LeviCivitaNum.expandUnitInverse` matches `FastLC.invNewton` on sparse `1/(1 + ε + ε²)`
+  let lcSparse := lc[1, ε, ε^2]
+  let invLegacy := FastLC.ofLeviCivitaNum (LeviCivitaNum.invOrder lcSparse 10)
+  match Calc.evalFastLC "1 / (1 + eps + eps^2)" 10 with
+  | .ok invFast =>
+    r := r.push (check g6 "LeviCivitaNum.invOrder(1+ε+ε², 10) == FastLC.invNewton"
+      (invLegacy == invFast) s!"legacy={invLegacy}, fast={invFast}")
+  | .error err => r := r.push (check g6 "invOrder sparse check" false err)
+
   return r
 
 /-- Print a formatted test report and return `true` iff every test passed. -/

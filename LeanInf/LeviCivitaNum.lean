@@ -351,14 +351,25 @@ def truncate (x : LeviCivitaNum) (maxTerms : Nat) : LeviCivitaNum :=
   let sorted := (x.toPolyG.toTerms.filter (fun t => t.coeff != 0)).qsort (fun a b => a.exp > b.exp)
   ofArray (sorted.extract 0 maxTerms)
 
-/-- Expand `1 / (1 + δ)` via the geometric series `∑_{k=0}^{n-1} (-δ)^k` for infinitesimal `δ`. -/
+/-- Keep only nonzero terms with exponent `≥ minExp`. -/
+def dropBelow (x : LeviCivitaNum) (minExp : Rat) : LeviCivitaNum :=
+  ofArray (x.toPolyG.toTerms.filter (fun t => t.coeff != 0 && t.exp ≥ minExp))
+
+/-- Expand `1 / (1 + δ)` via the geometric series `∑_{k=0}^{n-1} (-δ)^k` for infinitesimal `δ`,
+    truncating by relative exponent `≥ -(stepD * (n - 1))` (matching `FastLC.invNewton`) so sparse
+    cancellations like `1 / (1 + ε + ε²)` never retain corrupted terms beyond the loop horizon. -/
 def expandUnitInverse (delta : LeviCivitaNum) (n : Nat := 10) : LeviCivitaNum := Id.run do
+  if n == 0 then return zero
+  let lead := delta.largestTerm
+  let stepD : Rat := if lead.coeff != 0 && lead.exp < 0 then -lead.exp else 1
+  let minExp : Rat := -(stepD * ((n - 1 : Nat) : Rat))
   let mut result : LeviCivitaNum := 1
   let mut power : LeviCivitaNum := 1
   let negDelta := -delta
   for _ in [1:n] do
-    power := (power * negDelta).truncate n
-    result := (result + power).truncate n
+    power := (power * negDelta).dropBelow minExp
+    if power == 0 then break
+    result := (result + power).dropBelow minExp
   return result
 
 /-- Check if a Levi-Civita number has at most one nonzero term. -/

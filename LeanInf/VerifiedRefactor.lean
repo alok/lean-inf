@@ -530,6 +530,11 @@ theorem coeff_dropBelow (minExp : Rat) (x : FastLC) (e : Rat) :
     (x.dropBelow minExp).coeff e = if e ≥ minExp then x.coeff e else 0 :=
   TermList.coeffOf_takeWhileGe minExp x.wf e
 
+/-- Keep at most `maxTerms` largest-exponent terms strictly above `cutoff` (`e > cutoff`),
+    in `O(k)` time without re-sorting. -/
+def keepAbove (cutoff : Rat) (maxTerms : Nat) (x : FastLC) : FastLC :=
+  ⟨TermList.takeWhileGt cutoff maxTerms x.terms, TermList.takeWhileGt_wf cutoff maxTerms x.wf⟩
+
 /-- Truncate relative to the leading exponent `e0`: keep terms with exponent `> e0 - relOrder`,
     and cap total terms at `relOrder`, in `O(k)` time without re-sorting. -/
 def truncateRel (relOrder : Nat) (x : FastLC) : FastLC :=
@@ -537,7 +542,7 @@ def truncateRel (relOrder : Nat) (x : FastLC) : FastLC :=
   | none => zero
   | some (e0, _) =>
     let cutoff : Rat := e0 - (relOrder : Rat)
-    ⟨TermList.takeWhileGt cutoff relOrder x.terms, TermList.takeWhileGt_wf cutoff relOrder x.wf⟩
+    x.keepAbove cutoff relOrder
 
 /-- Fast precision-sliced Newton-Raphson multiplicative inverse (`O(log order)` multiplications),
     using residual form `y' = y + y * (1 - u * y)` and `O(k)` `dropBelow` slicing.
@@ -585,10 +590,21 @@ def invNewton (x : FastLC) (order : Nat := 12) : Except String FastLC :=
           let out := if isUnitLead then y else invLead * y
           return .ok (out.truncate order)
 
-/-- Divide two `FastLC` numbers using Newton-Raphson inversion. -/
+/-- Divide two `FastLC` numbers using Newton-Raphson inversion.
+    When the divisor `y` is non-monomial, drops terms below `ex - ey - stepD * (order - 1)`
+    matching `invNewton`'s accuracy horizon so exact cancellations like `(1-ε²)/(1-ε) = 1+ε`
+    and `(H²-1)/(H-1) = H+1` never expose garbage tails. -/
 def divNewton (x y : FastLC) (order : Nat := 12) : Except String FastLC := do
   let invY ← invNewton y order
-  return (x * invY).truncate order
+  if order == 0 then return zero
+  match x.leadingTerm, y.terms with
+  | none, _ => return zero
+  | some _, [_] => return (x * invY).truncate order
+  | some (ex, _), (ey, _) :: (ey2, _) :: _ =>
+    let stepD : Rat := if ey > ey2 then ey - ey2 else 1
+    let minExp : Rat := ex - ey - stepD * ((order - 1 : Nat) : Rat)
+    return ((x * invY).dropBelow minExp).truncate order
+  | _, [] => .error "Division by zero"
 
 /-- Total `Inv` instance defaulting to 12-term Newton-Raphson inversion (`0⁻¹ = 0`). -/
 instance : Inv FastLC where
@@ -597,17 +613,33 @@ instance : Inv FastLC where
     | .error _ => zero
 
 instance : Div FastLC where
-  div x y := (x * y⁻¹).truncate 12
+  div x y :=
+    match divNewton x y 12 with
+    | .ok r => r
+    | .error _ => zero
 
-/-- Convert a finite `Float` to a clean bounded-denominator `Rat` (up to `10^10` precision). -/
+/-- Convert a finite `Float` to an exact `Rat`: uses clean decimal denominator `scale`
+    when `|f| ≥ 1e-6` and `|f| * scale < 9e18`, and falls back to the exact IEEE-754 dyadic
+    rational via `Float.frExp` for very large or very small floats (avoiding `UInt64`
+    saturation on `exp(25)` / `10^12` and underflow to `0` on `exp(-25)`). -/
 def ratOfFloat (f : Float) (scale : Nat := 10000000000) : Rat :=
-  if f.isNaN || f.isInf then 0
+  if f.isNaN || f.isInf || f == 0.0 then 0
   else
-    let scaled := (f * Float.ofNat scale).round
-    let num : Int :=
-      if scaled < 0.0 then -Int.ofNat ((-scaled).toUInt64.toNat)
-      else Int.ofNat (scaled.toUInt64.toNat)
-    mkRat num scale
+    let af := f.abs
+    let prod := af * Float.ofNat scale
+    if af ≥ 1e-6 && prod < 9e18 then
+      let mag : Nat := prod.round.toUInt64.toNat
+      let num : Int := if f < 0.0 then -Int.ofNat mag else Int.ofNat mag
+      mkRat num scale
+    else
+      let (m, e) := Float.frExp f
+      let mAbs : Nat := (m.abs * Float.scaleB 1.0 53).round.toUInt64.toNat
+      let sNum : Int := if m < 0.0 then -Int.ofNat mAbs else Int.ofNat mAbs
+      let shift : Int := e - 53
+      if shift ≥ 0 then
+        mkRat (sNum * Int.ofNat (1 <<< shift.toNat)) 1
+      else
+        mkRat sNum (1 <<< shift.natAbs)
 
 /-- Overflow-safe conversion of an arbitrary-precision `Rat` to IEEE-754 `Float`
     using bit-length normalization (never overflows to `Inf / Inf = NaN` even when
@@ -649,18 +681,28 @@ def splitFinite (x : FastLC) : Except String (Rat × FastLC) :=
 /-- Exponential `exp(x)` on finite Levi-Civita numbers via `e^(a0 + δ) = e^a0 * ∑ δ^k / k!`.
     When `a0 = 0`, `e^0 = 1` so all series coefficients are 100% exact rationals! -/
 def expOrder (x : FastLC) (order : Nat := 10) : Except String FastLC := do
+  if !x.isFinite then
+    throw "exp of an infinite number is super-exponential (outside the Levi-Civita subring Q[H^Q])"
   let (a0, delta) ← splitFinite x
-  let scale : FastLC :=
-    if a0 == 0 then 1
-    else ofRat (ratOfFloat (Float.exp (ratToFloat a0)))
-  Id.run do
-    let mut sum : FastLC := 1
-    let mut term : FastLC := 1
-    for k in [1:order] do
-      term := (term * delta * ofRat (mkRat 1 k)).truncate order
-      if term.isZero then break
-      sum := (sum + term).truncate order
-    return .ok ((scale * sum).truncate order)
+  let scale : FastLC ←
+    if a0 == 0 then pure 1
+    else
+      let ea := Float.exp (ratToFloat a0)
+      if ea.isInf || ea.isNaN || ea == 0.0 then
+        throw "exp argument exceeds IEEE-754 finite range"
+      pure (ofRat (ratOfFloat ea))
+  match delta.order with
+  | none => return scale
+  | some ed =>
+    let cutoff : Rat := (order : Rat) * ed
+    Id.run do
+      let mut sum : FastLC := 1
+      let mut term : FastLC := 1
+      for k in [1:order] do
+        term := (term * delta * ofRat (mkRat 1 k)).keepAbove cutoff order
+        if term.isZero then break
+        sum := (sum + term).keepAbove cutoff order
+      return .ok ((scale * sum).keepAbove cutoff order)
 
 /-- Natural logarithm `ln(x)` for positive finite Levi-Civita numbers (or general positive LC
     when standard part dominates; `ln(H)` is outside the Levi-Civita field). -/
@@ -675,69 +717,126 @@ def lnOrder (x : FastLC) (order : Nat := 10) : Except String FastLC := do
   let u := (delta * ofRat (Rat.inv a0)).truncate order
   let base : FastLC :=
     if a0 == 1 then 0 else ofRat (ratOfFloat (Float.log (ratToFloat a0)))
-  Id.run do
-    let mut sum : FastLC := base
-    let mut powU : FastLC := 1
-    for k in [1:order] do
-      powU := (powU * u).truncate order
-      if powU.isZero then break
-      let sign : Int := if k % 2 == 1 then 1 else -1
-      let term := (powU * ofRat (mkRat sign k)).truncate order
-      sum := (sum + term).truncate order
-    return .ok sum
+  match u.order with
+  | none => return base
+  | some ed =>
+    let cutoff : Rat := (order : Rat) * ed
+    Id.run do
+      let mut sum : FastLC := base
+      let mut powU : FastLC := 1
+      for k in [1:order] do
+        powU := (powU * u).keepAbove cutoff order
+        if powU.isZero then break
+        let sign : Int := if k % 2 == 1 then 1 else -1
+        let term := (powU * ofRat (mkRat sign k)).keepAbove cutoff order
+        sum := (sum + term).keepAbove cutoff order
+      return .ok (sum.keepAbove cutoff order)
 
 /-- Sine `sin(x)` on finite Levi-Civita numbers via angle-addition and exact Taylor series. -/
 def sinOrder (x : FastLC) (order : Nat := 10) : Except String FastLC := do
   let (a0, delta) ← splitFinite x
   let sinA : FastLC := if a0 == 0 then 0 else ofRat (ratOfFloat (Float.sin (ratToFloat a0)))
   let cosA : FastLC := if a0 == 0 then 1 else ofRat (ratOfFloat (Float.cos (ratToFloat a0)))
-  Id.run do
-    let mut sinD : FastLC := 0
-    let mut cosD : FastLC := 1
-    let mut powD : FastLC := 1
-    let mut fact : Nat := 1
-    for k in [1:order] do
-      powD := (powD * delta).truncate order
-      fact := fact * k
-      if powD.isZero then break
-      match k % 4 with
-      | 1 => sinD := (sinD + powD * ofRat (mkRat 1 fact)).truncate order
-      | 2 => cosD := (cosD - powD * ofRat (mkRat 1 fact)).truncate order
-      | 3 => sinD := (sinD - powD * ofRat (mkRat 1 fact)).truncate order
-      | _ => cosD := (cosD + powD * ofRat (mkRat 1 fact)).truncate order
-    return .ok ((sinA * cosD + cosA * sinD).truncate order)
+  match delta.order with
+  | none => return sinA
+  | some ed =>
+    let cutoff : Rat := (order : Rat) * ed
+    Id.run do
+      let mut sinD : FastLC := 0
+      let mut cosD : FastLC := 1
+      let mut powD : FastLC := 1
+      let mut fact : Nat := 1
+      for k in [1:order] do
+        powD := (powD * delta).keepAbove cutoff order
+        fact := fact * k
+        if powD.isZero then break
+        match k % 4 with
+        | 1 => sinD := (sinD + powD * ofRat (mkRat 1 fact)).keepAbove cutoff order
+        | 2 => cosD := (cosD - powD * ofRat (mkRat 1 fact)).keepAbove cutoff order
+        | 3 => sinD := (sinD - powD * ofRat (mkRat 1 fact)).keepAbove cutoff order
+        | _ => cosD := (cosD + powD * ofRat (mkRat 1 fact)).keepAbove cutoff order
+      return .ok ((sinA * cosD + cosA * sinD).keepAbove cutoff order)
 
 /-- Cosine `cos(x)` on finite Levi-Civita numbers via angle-addition and exact Taylor series. -/
 def cosOrder (x : FastLC) (order : Nat := 10) : Except String FastLC := do
   let (a0, delta) ← splitFinite x
   let sinA : FastLC := if a0 == 0 then 0 else ofRat (ratOfFloat (Float.sin (ratToFloat a0)))
   let cosA : FastLC := if a0 == 0 then 1 else ofRat (ratOfFloat (Float.cos (ratToFloat a0)))
-  Id.run do
-    let mut sinD : FastLC := 0
-    let mut cosD : FastLC := 1
-    let mut powD : FastLC := 1
-    let mut fact : Nat := 1
-    for k in [1:order] do
-      powD := (powD * delta).truncate order
-      fact := fact * k
-      if powD.isZero then break
-      match k % 4 with
-      | 1 => sinD := (sinD + powD * ofRat (mkRat 1 fact)).truncate order
-      | 2 => cosD := (cosD - powD * ofRat (mkRat 1 fact)).truncate order
-      | 3 => sinD := (sinD - powD * ofRat (mkRat 1 fact)).truncate order
-      | _ => cosD := (cosD + powD * ofRat (mkRat 1 fact)).truncate order
-    return .ok ((cosA * cosD - sinA * sinD).truncate order)
+  match delta.order with
+  | none => return cosA
+  | some ed =>
+    let cutoff : Rat := (order : Rat) * ed
+    Id.run do
+      let mut sinD : FastLC := 0
+      let mut cosD : FastLC := 1
+      let mut powD : FastLC := 1
+      let mut fact : Nat := 1
+      for k in [1:order] do
+        powD := (powD * delta).keepAbove cutoff order
+        fact := fact * k
+        if powD.isZero then break
+        match k % 4 with
+        | 1 => sinD := (sinD + powD * ofRat (mkRat 1 fact)).keepAbove cutoff order
+        | 2 => cosD := (cosD - powD * ofRat (mkRat 1 fact)).keepAbove cutoff order
+        | 3 => sinD := (sinD - powD * ofRat (mkRat 1 fact)).keepAbove cutoff order
+        | _ => cosD := (cosD + powD * ofRat (mkRat 1 fact)).keepAbove cutoff order
+      return .ok ((cosA * cosD - sinA * sinD).keepAbove cutoff order)
+
+/-- Truncated binary exponentiation for large integer powers (`64 < n ≤ 10000`) on multi-term
+    series so `(1 + ε)^5000` stays `O(order² log n)` without materializing `n + 1` terms. -/
+private def powTruncated (x : FastLC) (n order : Nat) : FastLC :=
+  if h0 : n = 0 then 1
+  else if h1 : n = 1 then x.truncate order
+  else
+    have : n / 2 < n := Nat.div_lt_self (by omega) (by decide)
+    let half := powTruncated x (n / 2) order
+    let sq := (half * half).truncate order
+    if n % 2 == 0 then sq else (x * sq).truncate order
+termination_by n
 
 /-- Rational power `x^r` for positive Levi-Civita numbers (or any integer `r` on nonzero `x`)
-    via leading-term factoring and generalized binomial series `(1 + δ)^r = ∑ C(r, k) δ^k`. -/
+    via leading-term factoring and generalized binomial series `(1 + δ)^r = ∑ C(r, k) δ^k`.
+    Guards against DoS exponent blowup (`|n| > 10000` or scalar bit growth `> 100000`). -/
 def powRatOrder (x : FastLC) (r : Rat) (order : Nat := 10) : Except String FastLC := do
   if r == 0 then return 1
   if r.den == 1 then
-    if r.num ≥ 0 then
-      return (x.powFast r.num.toNat).truncate order
-    else
-      let invX ← invNewton x order
-      return (invX.powFast r.num.natAbs).truncate order
+    let n := r.num.natAbs
+    if x.isZero then
+      if r.num > 0 then return zero else throw "Zero raised to negative power"
+    -- Fast O(1) unit monomial path (`(±H^e)^n`)
+    match x.terms with
+    | [(e, c)] =>
+      if c == 1 then
+        return mono (r * e) 1
+      else if c == -1 then
+        return mono (r * e) (if n % 2 == 0 then 1 else -1)
+      else
+        if n > 10000 then
+          throw s!"Integer exponent {r.num} exceeds calculator limit (10000)"
+        let cbits := max (c.num.natAbs.log2 + 1) (c.den.log2 + 1)
+        if n * cbits > 100000 then
+          throw s!"Power result exceeds bit limit ({n} * {cbits} bits)"
+        if r.num ≥ 0 then
+          return (x.powFast n).truncate order
+        else
+          let invX ← invNewton x order
+          return (invX.powFast n).truncate order
+    | _ =>
+      if n > 10000 then
+        throw s!"Integer exponent {r.num} exceeds calculator limit (10000)"
+      match x.leadingTerm with
+      | some (_, c0) =>
+        let cbits := max (c0.num.natAbs.log2 + 1) (c0.den.log2 + 1)
+        if c0 != 1 && c0 != -1 && n * cbits > 100000 then
+          throw s!"Power result exceeds bit limit ({n} * {cbits} bits)"
+      | none => pure ()
+      if r.num ≥ 0 then
+        if n ≤ 64 then return (x.powFast n).truncate order
+        else return powTruncated x n order
+      else
+        let invX ← invNewton x order
+        if n ≤ 64 then return (invX.powFast n).truncate order
+        else return powTruncated invX n order
   match x.leadingTerm with
   | none =>
     if r > 0 then return zero else throw "Zero raised to negative power"
@@ -748,17 +847,20 @@ def powRatOrder (x : FastLC) (r : Rat) (order : Nat := 10) : Except String FastL
       else ratOfFloat (Float.pow (ratToFloat c0) (ratToFloat r))
     let leadPow := mono (e0 * r) leadCoeff
     let delta := (mono (-e0) (Rat.inv c0) * x) - 1
-    if delta.isZero then return leadPow
-    Id.run do
-      let mut sum : FastLC := 1
-      let mut term : FastLC := 1
-      let mut binom : Rat := 1
-      for k in [1:order] do
-        binom := binom * (r - ((k - 1 : Nat) : Rat)) * mkRat 1 k
-        term := (term * delta).truncate order
-        if term.isZero then break
-        sum := (sum + term * ofRat binom).truncate order
-      return .ok ((leadPow * sum).truncate order)
+    match delta.order with
+    | none => return leadPow
+    | some ed =>
+      let cutoff : Rat := (order : Rat) * ed
+      Id.run do
+        let mut sum : FastLC := 1
+        let mut term : FastLC := 1
+        let mut binom : Rat := 1
+        for k in [1:order] do
+          binom := binom * (r - ((k - 1 : Nat) : Rat)) * mkRat 1 k
+          term := (term * delta).keepAbove cutoff order
+          if term.isZero then break
+          sum := (sum + term * ofRat binom).keepAbove cutoff order
+        return .ok ((leadPow * sum.keepAbove cutoff order).truncate order)
 
 /-- Square root `√x` for nonnegative Levi-Civita numbers (works on `H`, `ε`, `1 + ε`, etc.!). -/
 def sqrtOrder (x : FastLC) (order : Nat := 10) : Except String FastLC :=

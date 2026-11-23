@@ -8,7 +8,9 @@ private def parseFloatArg (s : String) (default : Float) : Float :=
     match Calc.evalExpr (Calc.defaultEnv 6) e with
     | .ok (.num v, _) =>
       match v.stdPart with
-      | some r => FastLC.ratToFloat r
+      | some r =>
+        let f := FastLC.ratToFloat r
+        if f.isNaN || f.isInf || f ≤ 0.0 then default else f
       | none => default
     | _ => default
   | _ => default
@@ -64,7 +66,7 @@ private partial def runServeStdio : IO Unit := do
       let bigN := parseFloatArg nStr 100.0
       match StepFunction.stepDemoJSON bigN 32 4 with
       | .ok j => stdout.putStrLn j
-      | .error e => stdout.putStrLn ("{\"ok\":false,\"error\":\"" ++ e ++ "\"}")
+      | .error e => stdout.putStrLn ("{\"ok\":false,\"error\":\"" ++ Calc.escapeJsonStr e ++ "\"}")
       stdout.flush
     | ["bench"] =>
       let rows ← Bench.runAllBenchmarks
