@@ -270,15 +270,35 @@ def powNaive (x : FastLC) : Nat → FastLC
   | 0 => 1
   | n + 1 => x * powNaive x n
 
-/-- Refactored `O(log n)` exponentiation by squaring. -/
-def powFast (x : FastLC) (n : Nat) : FastLC :=
-  if h : n = 0 then 1
+private theorem coeff_powNaive (x : FastLC) (n : Nat) (e : Rat) :
+    (powNaive x n).coeff e = TermList.coeffOf (Kronecker.powNaiveTerms x.terms n) e := by
+  induction n generalizing e with
+  | zero => rfl
+  | succ n' ih =>
+    rw [powNaive, coeff_mul, Kronecker.powNaiveTerms]
+    exact TermList.coeffOf_mulNaiveTerms_congr_right ih e
+
+private def powFastLoop (x : FastLC) (n : Nat) : FastLC :=
+  if h0 : n = 0 then 1
+  else if h1 : n = 1 then x
   else
-    have : n / 2 < n := Nat.div_lt_self (Nat.pos_of_ne_zero h) (by decide)
-    let half := powFast x (n / 2)
+    have : n / 2 < n := Nat.div_lt_self (by omega) (by decide)
+    let half := powFastLoop x (n / 2)
     let sq := half * half
     if n % 2 == 0 then sq else x * sq
 termination_by n
+
+/-- Refactored `O(log n)` exponentiation by squaring: routes grid-aligned integer and
+    bounded-LCM rational series through in-array `aPowIntFast` (single-pack GMP Kronecker
+    squaring + half-work Karatsuba squaring, zero intermediate `TermList` round-trips),
+    monomials through scalar `powRatFast`, and off-grid sparse series through `powFastLoop`. -/
+def powFast (x : FastLC) (n : Nat) : FastLC :=
+  if n == 0 then 1
+  else if n == 1 then x
+  else
+    match h : Kronecker.powFastGrid x.terms n with
+    | some ts => ⟨ts, Kronecker.powFastGrid_wf h⟩
+    | none => powFastLoop x n
 
 private theorem powNaive_add (x : FastLC) (a b : Nat) :
     powNaive x (a + b) = powNaive x a * powNaive x b := by
@@ -288,32 +308,53 @@ private theorem powNaive_add (x : FastLC) (a b : Nat) :
     have hsucc : a' + 1 + b = (a' + b) + 1 := by omega
     rw [hsucc, powNaive, powNaive, ih, mul_assoc]
 
+private theorem powFastLoop_eq_powNaive (x : FastLC) (n : Nat) :
+    powFastLoop x n = powNaive x n := by
+  unfold powFastLoop
+  split
+  · rename_i h0; subst h0; rfl
+  · rename_i hne0
+    split
+    · rename_i h1; subst h1; exact (mul_one x).symm
+    · rename_i hne1
+      have hlt : n / 2 < n := Nat.div_lt_self (by omega) (by decide)
+      have ih := powFastLoop_eq_powNaive x (n / 2)
+      dsimp only
+      rw [ih, ← powNaive_add]
+      by_cases heven : n % 2 = 0
+      · have hmod : (n % 2 == 0) = true := by simp [heven]
+        have hsum : n / 2 + n / 2 = n := by omega
+        simp [hmod, hsum]
+      · have hmod : (n % 2 == 0) = false := by
+          cases hb : (n % 2 == 0)
+          · rfl
+          · exact absurd (eq_of_beq hb) heven
+        have hsum : n = (n / 2 + n / 2) + 1 := by omega
+        simp only [hmod, Bool.false_eq_true, ↓reduceIte]
+        have hpow : x * powNaive x (n / 2 + n / 2) = powNaive x n := by
+          change powNaive x ((n / 2 + n / 2) + 1) = powNaive x n
+          exact congrArg (powNaive x) hsum.symm
+        exact hpow
+termination_by n
+
 /-- **Binary Exponentiation Equivalence Theorem (zero `sorry`)**:
     `powFast x n` is structurally identical to `powNaive x n` for every `x : FastLC` and `n : Nat`. -/
 theorem powFast_eq_powNaive (x : FastLC) (n : Nat) : powFast x n = powNaive x n := by
   unfold powFast
   split
-  · rename_i h0; subst h0; rfl
-  · rename_i hne
-    have hlt : n / 2 < n := Nat.div_lt_self (Nat.pos_of_ne_zero hne) (by decide)
-    have ih := powFast_eq_powNaive x (n / 2)
-    dsimp only
-    rw [ih, ← powNaive_add]
-    by_cases heven : n % 2 = 0
-    · have hmod : (n % 2 == 0) = true := by simp [heven]
-      have hsum : n / 2 + n / 2 = n := by omega
-      simp [hmod, hsum]
-    · have hmod : (n % 2 == 0) = false := by
-        cases hb : (n % 2 == 0)
-        · rfl
-        · exact absurd (eq_of_beq hb) heven
-      have hsum : n = (n / 2 + n / 2) + 1 := by omega
-      simp only [hmod, Bool.false_eq_true, ↓reduceIte]
-      have hpow : x * powNaive x (n / 2 + n / 2) = powNaive x n := by
-        change powNaive x ((n / 2 + n / 2) + 1) = powNaive x n
-        exact congrArg (powNaive x) hsum.symm
-      exact hpow
-termination_by n
+  · rename_i h0
+    have hn : n = 0 := eq_of_beq h0
+    subst hn; rfl
+  · split
+    · rename_i h1
+      have hn : n = 1 := eq_of_beq h1
+      subst hn; exact (mul_one x).symm
+    · split
+      · rename_i ts hgrid
+        ext e
+        change TermList.coeffOf ts e = (powNaive x n).coeff e
+        rw [Kronecker.coeffOf_powFastGrid hgrid e, coeff_powNaive]
+      · exact powFastLoop_eq_powNaive x n
 
 instance : HPow FastLC Nat FastLC where
   hPow := powFast

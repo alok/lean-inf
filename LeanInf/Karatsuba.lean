@@ -231,6 +231,24 @@ theorem dCoeff_dMulSchoolbook_shift_right (m : Nat) (a b : List Rat) (k : Nat) :
         · have hsub : k' + 1 - m = (k' - m) + 1 := by omega
           simp [h1, h2, hsub]
 
+/-- Right-cons expansion law for schoolbook multiplication. -/
+theorem dCoeff_dMulSchoolbook_cons_right (a : List Rat) (y : Rat) (b : List Rat) (k : Nat) :
+    dCoeff (dMulSchoolbook a (y :: b)) k =
+      y * dCoeff a k + (if k = 0 then 0 else dCoeff (dMulSchoolbook a b) (k - 1)) := by
+  induction a generalizing k with
+  | nil =>
+    cases k <;> simp [dMulSchoolbook, Rat.mul_zero, Rat.add_zero]
+  | cons x xs ih =>
+    simp only [dMulSchoolbook, dCoeff_dAdd, dCoeff_dScale]
+    cases k with
+    | zero =>
+      simp only [dCoeff_cons_zero, ↓reduceIte, Rat.add_zero, Rat.mul_comm]
+    | succ k' =>
+      simp only [dCoeff_cons_succ, Nat.succ_ne_zero, ↓reduceIte, Nat.add_sub_cancel, ih k']
+      cases k' with
+      | zero => simp [dCoeff_cons_zero]; grind
+      | succ k'' => simp [dCoeff_cons_succ]; grind
+
 /-- Double-shift composition law. -/
 theorem dCoeff_dShift_dShift (m n : Nat) (p : List Rat) (k : Nat) :
     dCoeff (dShift m (dShift n p)) k = dCoeff (dShift (m + n) p) k := by
@@ -870,45 +888,100 @@ theorem aCoeff_aSub (a b : Array Int) (k : Nat) :
     rw [aCoeff_of_ge (by omega : a.size ≤ k), aCoeff_of_ge (by omega : b.size ≤ k)]
     rfl
 
-/-- In-place `RC=1` fused scale-and-accumulate loop: `out[offset + j] += c * b[j]`. -/
-def aScaleAddAtLoop (offset : Nat) (c : Int) (b : Array Int) (j : Nat) (out : Array Int) : Array Int :=
+/-- Fused single-pass three-array subtraction loop: `acc[i] = t[i] - z0[i] - z2[i]`. -/
+def aSubSubLoop (t z0 z2 : Array Int) (n i : Nat) (acc : Array Int) : Array Int :=
+  if _h : i < n then
+    aSubSubLoop t z0 z2 n (i + 1) (acc.push (aCoeff t i - aCoeff z0 i - aCoeff z2 i))
+  else
+    acc
+termination_by n - i
+
+/-- Fused single-pass `t - z0 - z2` in one allocation (eliminating one full array pass per
+    Karatsuba node). -/
+@[inline] def aSubSub (t z0 z2 : Array Int) : Array Int :=
+  let n := max t.size (max z0.size z2.size)
+  aSubSubLoop t z0 z2 n 0 (Array.mkEmpty n)
+
+private theorem aCoeff_aSubSubLoop (t z0 z2 : Array Int) (n i : Nat) (acc : Array Int)
+    (hi : i ≤ n) (hacc : acc.size = i) (k : Nat) :
+    aCoeff (aSubSubLoop t z0 z2 n i acc) k =
+      if k < i then aCoeff acc k
+      else if k < n then aCoeff t k - aCoeff z0 k - aCoeff z2 k
+      else 0 := by
+  unfold aSubSubLoop
+  split
+  · rename_i hlt
+    rw [aCoeff_aSubSubLoop t z0 z2 n (i + 1) _ (by omega) (by simp [hacc]) k]
+    by_cases hk : k < i
+    · have hk1 : k < i + 1 := by omega
+      simp [hk, hk1, aCoeff_push, hacc]
+    · by_cases heq : k = i
+      · subst heq
+        simp [hlt, aCoeff_push, hacc]
+      · have hnot1 : ¬ (k < i + 1) := by omega
+        simp [hk, hnot1]
+  · rename_i hge
+    have hni : n = i := by omega
+    subst hni
+    by_cases hk : k < n
+    · simp [hk]
+    · simp [hk, aCoeff_of_ge (by omega : acc.size ≤ k)]
+termination_by n - i
+
+/-- Coefficient specification of fused `aSubSub`. -/
+theorem aCoeff_aSubSub (t z0 z2 : Array Int) (k : Nat) :
+    aCoeff (aSubSub t z0 z2) k = aCoeff t k - aCoeff z0 k - aCoeff z2 k := by
+  unfold aSubSub
+  rw [aCoeff_aSubSubLoop t z0 z2 (max t.size (max z0.size z2.size)) 0 _ (Nat.zero_le _) (by simp) k]
+  simp only [Nat.not_lt_zero, ↓reduceIte]
+  split
+  · rfl
+  · rename_i hge
+    rw [aCoeff_of_ge (by omega : t.size ≤ k), aCoeff_of_ge (by omega : z0.size ≤ k),
+        aCoeff_of_ge (by omega : z2.size ≤ k)]
+    rfl
+
+/-- In-place `RC=1` fused scale-and-accumulate loop: `out[offset + j] += c * b[j]`,
+    carrying erased `Prop` `hsize : offset + b.size ≤ out.size` to eliminate inner-loop
+    `out.size` bounds checks in compiled C. -/
+def aScaleAddAtLoop (offset : Nat) (c : Int) (b : Array Int) (j : Nat) (out : Array Int)
+    (hsize : offset + b.size ≤ out.size) : Array Int :=
   if hj : j < b.size then
     let idx := offset + j
-    if hidx : idx < out.size then
-      let out' := out.set idx (out[idx] + c * b[j]) hidx
-      aScaleAddAtLoop offset c b (j + 1) out'
-    else
-      out
+    have hidx : idx < out.size := by omega
+    let out' := out.set idx (out[idx] + c * b[j]) hidx
+    have hsize' : offset + b.size ≤ out'.size := by simpa [out'] using hsize
+    aScaleAddAtLoop offset c b (j + 1) out' hsize'
   else
     out
 termination_by b.size - j
 
 /-- In-place `RC=1` fused scale-and-accumulate: `out[offset + j] += c * b[j]` for all `j`. -/
-@[inline] def aScaleAddAt (out : Array Int) (offset : Nat) (c : Int) (b : Array Int) : Array Int :=
-  if c == 0 then out else aScaleAddAtLoop offset c b 0 out
+@[inline] def aScaleAddAt (out : Array Int) (offset : Nat) (c : Int) (b : Array Int)
+    (hsize : offset + b.size ≤ out.size) : Array Int :=
+  if c == 0 then out else aScaleAddAtLoop offset c b 0 out hsize
 
 /-- `aScaleAddAtLoop` preserves array size. -/
 theorem aScaleAddAtLoop_size (offset : Nat) (c : Int) (b : Array Int) (j : Nat)
-    (out : Array Int) :
-    (aScaleAddAtLoop offset c b j out).size = out.size := by
+    (out : Array Int) (hsize : offset + b.size ≤ out.size) :
+    (aScaleAddAtLoop offset c b j out hsize).size = out.size := by
   unfold aScaleAddAtLoop
   split
   · dsimp only
-    split
-    · rw [aScaleAddAtLoop_size, Array.size_set]
-    · rfl
+    rw [aScaleAddAtLoop_size, Array.size_set]
   · rfl
 termination_by b.size - j
 
-private theorem aCoeff_aScaleAddAtLoop (offset : Nat) (c : Int) (b : Array Int) (j : Nat)
+/-- Coefficient specification of `aScaleAddAtLoop` starting at index `j`. -/
+theorem aCoeff_aScaleAddAtLoop (offset : Nat) (c : Int) (b : Array Int) (j : Nat)
     (out : Array Int) (hsize : offset + b.size ≤ out.size) (k : Nat) :
-    aCoeff (aScaleAddAtLoop offset c b j out) k =
+    aCoeff (aScaleAddAtLoop offset c b j out hsize) k =
       aCoeff out k + (if k < offset + j then 0 else c * aCoeff b (k - offset)) := by
   unfold aScaleAddAtLoop
   split
   · rename_i hj
+    dsimp only
     have hidx : offset + j < out.size := by omega
-    simp only [hidx, ↓reduceDIte]
     have hsize' : offset + b.size ≤ (out.set (offset + j) (out[offset + j] + c * b[j]) hidx).size := by
       simpa using hsize
     rw [aCoeff_aScaleAddAtLoop offset c b (j + 1) _ hsize' k, aCoeff_set]
@@ -935,7 +1008,7 @@ termination_by b.size - j
 /-- Coefficient specification of `aScaleAddAt`. -/
 theorem aCoeff_aScaleAddAt (out : Array Int) (offset : Nat) (c : Int) (b : Array Int)
     (hsize : offset + b.size ≤ out.size) (k : Nat) :
-    aCoeff (aScaleAddAt out offset c b) k =
+    aCoeff (aScaleAddAt out offset c b hsize) k =
       aCoeff out k + (if k < offset then 0 else c * aCoeff b (k - offset)) := by
   unfold aScaleAddAt
   split
@@ -946,10 +1019,19 @@ theorem aCoeff_aScaleAddAt (out : Array Int) (offset : Nat) (c : Int) (b : Array
   · simpa using aCoeff_aScaleAddAtLoop offset c b 0 out hsize k
 
 /-- In-place `RC=1` schoolbook loop over `a[i]`, accumulating `a[i] * u^i * b` into `out`. -/
-def aMulSchoolbookLoop (a b : Array Int) (i : Nat) (out : Array Int) : Array Int :=
+def aMulSchoolbookLoop (a b : Array Int) (i : Nat) (out : Array Int)
+    (hsize : a.size + b.size - 1 ≤ out.size) : Array Int :=
   if hi : i < a.size then
-    let out' := aScaleAddAt out i a[i] b
-    aMulSchoolbookLoop a b (i + 1) out'
+    have hsc : i + b.size ≤ out.size := by omega
+    let out' := aScaleAddAt out i a[i] b hsc
+    have hsize' : a.size + b.size - 1 ≤ out'.size := by
+      have hsz : out'.size = out.size := by
+        unfold out' aScaleAddAt
+        split
+        · rfl
+        · exact aScaleAddAtLoop_size i a[i] b 0 out hsc
+      omega
+    aMulSchoolbookLoop a b (i + 1) out' hsize'
   else
     out
 termination_by a.size - i
@@ -959,23 +1041,19 @@ def aMulSchoolbookInt (a b : Array Int) : Array Int :=
   if a.isEmpty || b.isEmpty then #[]
   else
     let out := Array.replicate (a.size + b.size - 1) (0 : Int)
-    aMulSchoolbookLoop a b 0 out
+    aMulSchoolbookLoop a b 0 out (by simp [out])
 
 private theorem aMulSchoolbookLoop_spec (a b : Array Int) (i : Nat) (out : Array Int)
     (hsize : a.size + b.size - 1 ≤ out.size) (hb : b.size > 0) (k : Nat) :
-    Rat.ofInt (aCoeff (aMulSchoolbookLoop a b i out) k) =
+    Rat.ofInt (aCoeff (aMulSchoolbookLoop a b i out hsize) k) =
       Rat.ofInt (aCoeff out k) +
         dCoeff (dShift i (dMulSchoolbook ((a.toList.drop i).map Rat.ofInt) (b.toList.map Rat.ofInt))) k := by
   unfold aMulSchoolbookLoop
   split
   · rename_i hi
+    dsimp only
     have hsc_size : i + b.size ≤ out.size := by omega
-    have hout'_size : (aScaleAddAt out i a[i] b).size = out.size := by
-      unfold aScaleAddAt
-      split
-      · rfl
-      · exact aScaleAddAtLoop_size i a[i] b 0 out
-    rw [aMulSchoolbookLoop_spec a b (i + 1) _ (by omega) hb k,
+    rw [aMulSchoolbookLoop_spec a b (i + 1) _ _ hb k,
         aCoeff_aScaleAddAt out i a[i] b hsc_size k, rat_ofInt_add]
     have hdrop : a.toList.drop i = a[i] :: a.toList.drop (i + 1) := by
       have hi' : i < a.toList.length := by simpa using hi
@@ -1033,40 +1111,163 @@ theorem aCoeff_aMulSchoolbookInt (a b : Array Int) (k : Nat) :
       (by simp) hbpos k
     simpa [aCoeff_replicate_zero, rat_ofInt_zero, Rat.zero_add, dCoeff_dShift] using hspec
 
-/-- Single-pass Karatsuba recombination loop: `z0 + u^m z1 + u^{2m} z2` in one allocation. -/
-def aCombineKaratsubaLoop (m : Nat) (z0 z1 z2 : Array Int) (n i : Nat) (acc : Array Int) : Array Int :=
+/-- Karatsuba recombination Phase 1 (`0 ≤ i < min m n`): push `z0[i]` with zero branch checks. -/
+def aCombineP1 (z0 : Array Int) (n1 i : Nat) (acc : Array Int) : Array Int :=
+  if _h : i < n1 then
+    aCombineP1 z0 n1 (i + 1) (acc.push (aCoeff z0 i))
+  else
+    acc
+termination_by n1 - i
+
+/-- Karatsuba recombination Phase 2 (`min m n ≤ i < min (2*m) n`): push `z0[i] + z1[i - m]`. -/
+def aCombineP2 (m : Nat) (z0 z1 : Array Int) (n2 i : Nat) (acc : Array Int) : Array Int :=
+  if _h : i < n2 then
+    aCombineP2 m z0 z1 n2 (i + 1) (acc.push (aCoeff z0 i + aCoeff z1 (i - m)))
+  else
+    acc
+termination_by n2 - i
+
+/-- Karatsuba recombination Phase 3 (`min (2*m) n ≤ i < n`, `z0.size ≤ 2*m`):
+    push `z1[i - m] + z2[i - 2*m]` without inspecting `z0`. -/
+def aCombineP3NoZ0 (m m2 : Nat) (z1 z2 : Array Int) (n i : Nat) (acc : Array Int) : Array Int :=
   if _h : i < n then
-    let v0 := aCoeff z0 i
-    let v1 := if i < m then 0 else aCoeff z1 (i - m)
-    let v2 := if i < 2 * m then 0 else aCoeff z2 (i - 2 * m)
-    aCombineKaratsubaLoop m z0 z1 z2 n (i + 1) (acc.push (v0 + v1 + v2))
+    aCombineP3NoZ0 m m2 z1 z2 n (i + 1) (acc.push (aCoeff z1 (i - m) + aCoeff z2 (i - m2)))
   else
     acc
 termination_by n - i
 
-/-- Combine Karatsuba subproducts `z0 + u^m z1 + u^{2m} z2` directly into one `Array Int`. -/
-@[inline] def aCombineKaratsuba (m : Nat) (z0 z1 z2 : Array Int) : Array Int :=
-  let n := max z0.size (max (m + z1.size) (2 * m + z2.size))
-  aCombineKaratsubaLoop m z0 z1 z2 n 0 (Array.mkEmpty n)
+/-- Karatsuba recombination Phase 3 general fallback (`min (2*m) n ≤ i < n`):
+    push `z0[i] + z1[i - m] + z2[i - 2*m]` with hoisted `m2 = 2 * m`. -/
+def aCombineP3 (m m2 : Nat) (z0 z1 z2 : Array Int) (n i : Nat) (acc : Array Int) : Array Int :=
+  if _h : i < n then
+    aCombineP3 m m2 z0 z1 z2 n (i + 1)
+      (acc.push (aCoeff z0 i + aCoeff z1 (i - m) + aCoeff z2 (i - m2)))
+  else
+    acc
+termination_by n - i
 
-private theorem aCoeff_aCombineKaratsubaLoop (m : Nat) (z0 z1 z2 : Array Int) (n i : Nat)
-    (acc : Array Int) (hi : i ≤ n) (hacc : acc.size = i) (k : Nat) :
-    aCoeff (aCombineKaratsubaLoop m z0 z1 z2 n i acc) k =
+/-- Combine Karatsuba subproducts `z0 + u^m z1 + u^{2m} z2` directly into one `Array Int`
+    using 3 branch-minimal phase loops and hoisted `m2 = m + m`. -/
+@[inline] def aCombineKaratsuba (m : Nat) (z0 z1 z2 : Array Int) : Array Int :=
+  let m2 := m + m
+  let n := max z0.size (max (m + z1.size) (m2 + z2.size))
+  let n1 := min m n
+  let n2 := min m2 n
+  let acc1 := aCombineP1 z0 n1 0 (Array.mkEmpty n)
+  let acc2 := aCombineP2 m z0 z1 n2 n1 acc1
+  if z0.size ≤ m2 then
+    aCombineP3NoZ0 m m2 z1 z2 n n2 acc2
+  else
+    aCombineP3 m m2 z0 z1 z2 n n2 acc2
+
+private theorem aCombineP1_size (z0 : Array Int) (n1 i : Nat) (acc : Array Int)
+    (hi : i ≤ n1) (hacc : acc.size = i) :
+    (aCombineP1 z0 n1 i acc).size = n1 := by
+  unfold aCombineP1
+  split
+  · exact aCombineP1_size z0 n1 (i + 1) _ (by omega) (by simp [hacc])
+  · omega
+termination_by n1 - i
+
+private theorem aCoeff_aCombineP1 (z0 : Array Int) (n1 i : Nat) (acc : Array Int)
+    (hi : i ≤ n1) (hacc : acc.size = i) (k : Nat) :
+    aCoeff (aCombineP1 z0 n1 i acc) k =
       if k < i then aCoeff acc k
-      else if k < n then
-        aCoeff z0 k + (if k < m then 0 else aCoeff z1 (k - m)) +
-          (if k < 2 * m then 0 else aCoeff z2 (k - 2 * m))
+      else if k < n1 then aCoeff z0 k
       else 0 := by
-  unfold aCombineKaratsubaLoop
+  unfold aCombineP1
   split
   · rename_i hlt
-    rw [aCoeff_aCombineKaratsubaLoop m z0 z1 z2 n (i + 1) _ (by omega) (by simp [hacc]) k]
+    rw [aCoeff_aCombineP1 z0 n1 (i + 1) _ (by omega) (by simp [hacc]) k]
     by_cases hk : k < i
     · have hk1 : k < i + 1 := by omega
       simp [hk, hk1, aCoeff_push, hacc]
     · by_cases heq : k = i
-      · subst heq
-        simp [hlt, aCoeff_push, hacc]
+      · subst heq; simp [hlt, aCoeff_push, hacc]
+      · have hnot1 : ¬ (k < i + 1) := by omega
+        simp [hk, hnot1]
+  · rename_i hge
+    have hni : n1 = i := by omega
+    subst hni
+    by_cases hk : k < n1
+    · simp [hk]
+    · simp [hk, aCoeff_of_ge (by omega : acc.size ≤ k)]
+termination_by n1 - i
+
+private theorem aCombineP2_size (m : Nat) (z0 z1 : Array Int) (n2 i : Nat) (acc : Array Int)
+    (hi : i ≤ n2) (hacc : acc.size = i) :
+    (aCombineP2 m z0 z1 n2 i acc).size = n2 := by
+  unfold aCombineP2
+  split
+  · exact aCombineP2_size m z0 z1 n2 (i + 1) _ (by omega) (by simp [hacc])
+  · omega
+termination_by n2 - i
+
+private theorem aCoeff_aCombineP2 (m : Nat) (z0 z1 : Array Int) (n2 i : Nat) (acc : Array Int)
+    (hi : i ≤ n2) (hacc : acc.size = i) (k : Nat) :
+    aCoeff (aCombineP2 m z0 z1 n2 i acc) k =
+      if k < i then aCoeff acc k
+      else if k < n2 then aCoeff z0 k + aCoeff z1 (k - m)
+      else 0 := by
+  unfold aCombineP2
+  split
+  · rename_i hlt
+    rw [aCoeff_aCombineP2 m z0 z1 n2 (i + 1) _ (by omega) (by simp [hacc]) k]
+    by_cases hk : k < i
+    · have hk1 : k < i + 1 := by omega
+      simp [hk, hk1, aCoeff_push, hacc]
+    · by_cases heq : k = i
+      · subst heq; simp [hlt, aCoeff_push, hacc]
+      · have hnot1 : ¬ (k < i + 1) := by omega
+        simp [hk, hnot1]
+  · rename_i hge
+    have hni : n2 = i := by omega
+    subst hni
+    by_cases hk : k < n2
+    · simp [hk]
+    · simp [hk, aCoeff_of_ge (by omega : acc.size ≤ k)]
+termination_by n2 - i
+
+private theorem aCoeff_aCombineP3NoZ0 (m m2 : Nat) (z1 z2 : Array Int) (n i : Nat)
+    (acc : Array Int) (hi : i ≤ n) (hacc : acc.size = i) (k : Nat) :
+    aCoeff (aCombineP3NoZ0 m m2 z1 z2 n i acc) k =
+      if k < i then aCoeff acc k
+      else if k < n then aCoeff z1 (k - m) + aCoeff z2 (k - m2)
+      else 0 := by
+  unfold aCombineP3NoZ0
+  split
+  · rename_i hlt
+    rw [aCoeff_aCombineP3NoZ0 m m2 z1 z2 n (i + 1) _ (by omega) (by simp [hacc]) k]
+    by_cases hk : k < i
+    · have hk1 : k < i + 1 := by omega
+      simp [hk, hk1, aCoeff_push, hacc]
+    · by_cases heq : k = i
+      · subst heq; simp [hlt, aCoeff_push, hacc]
+      · have hnot1 : ¬ (k < i + 1) := by omega
+        simp [hk, hnot1]
+  · rename_i hge
+    have hni : n = i := by omega
+    subst hni
+    by_cases hk : k < n
+    · simp [hk]
+    · simp [hk, aCoeff_of_ge (by omega : acc.size ≤ k)]
+termination_by n - i
+
+private theorem aCoeff_aCombineP3 (m m2 : Nat) (z0 z1 z2 : Array Int) (n i : Nat)
+    (acc : Array Int) (hi : i ≤ n) (hacc : acc.size = i) (k : Nat) :
+    aCoeff (aCombineP3 m m2 z0 z1 z2 n i acc) k =
+      if k < i then aCoeff acc k
+      else if k < n then aCoeff z0 k + aCoeff z1 (k - m) + aCoeff z2 (k - m2)
+      else 0 := by
+  unfold aCombineP3
+  split
+  · rename_i hlt
+    rw [aCoeff_aCombineP3 m m2 z0 z1 z2 n (i + 1) _ (by omega) (by simp [hacc]) k]
+    by_cases hk : k < i
+    · have hk1 : k < i + 1 := by omega
+      simp [hk, hk1, aCoeff_push, hacc]
+    · by_cases heq : k = i
+      · subst heq; simp [hlt, aCoeff_push, hacc]
       · have hnot1 : ¬ (k < i + 1) := by omega
         simp [hk, hnot1]
   · rename_i hge
@@ -1083,25 +1284,82 @@ theorem aCoeff_aCombineKaratsuba (m : Nat) (z0 z1 z2 : Array Int) (k : Nat) :
       aCoeff z0 k + (if k < m then 0 else aCoeff z1 (k - m)) +
         (if k < 2 * m then 0 else aCoeff z2 (k - 2 * m)) := by
   unfold aCombineKaratsuba
-  let n := max z0.size (max (m + z1.size) (2 * m + z2.size))
-  rw [aCoeff_aCombineKaratsubaLoop m z0 z1 z2 n 0 _ (Nat.zero_le _) (by simp) k]
-  simp only [Nat.not_lt_zero, ↓reduceIte]
+  dsimp only
+  let m2 := m + m
+  have hm2 : m2 = 2 * m := by omega
+  let n := max z0.size (max (m + z1.size) (m2 + z2.size))
+  let n1 := min m n
+  let n2 := min m2 n
+  have h1sz : (aCombineP1 z0 n1 0 (Array.mkEmpty n)).size = n1 :=
+    aCombineP1_size z0 n1 0 _ (Nat.zero_le _) (by simp)
+  have h2sz : (aCombineP2 m z0 z1 n2 n1 (aCombineP1 z0 n1 0 (Array.mkEmpty n))).size = n2 :=
+    aCombineP2_size m z0 z1 n2 n1 _ (by omega) h1sz
+  have hacc1 : aCoeff (aCombineP1 z0 n1 0 (Array.mkEmpty n)) k =
+      if k < n1 then aCoeff z0 k else 0 := by
+    rw [aCoeff_aCombineP1 z0 n1 0 _ (Nat.zero_le _) (by simp) k]
+    simp
+  have hacc2 : aCoeff (aCombineP2 m z0 z1 n2 n1 (aCombineP1 z0 n1 0 (Array.mkEmpty n))) k =
+      if k < n1 then aCoeff z0 k
+      else if k < n2 then aCoeff z0 k + aCoeff z1 (k - m)
+      else 0 := by
+    rw [aCoeff_aCombineP2 m z0 z1 n2 n1 _ (by omega) h1sz k, hacc1]
+    by_cases hk1 : k < n1 <;> simp [hk1]
   split
-  · rfl
-  · rename_i hge
-    have h0 : z0.size ≤ k := by omega
-    rw [aCoeff_of_ge h0]
-    split
-    · split
-      · rfl
-      · rename_i h2
-        rw [aCoeff_of_ge (by omega : z2.size ≤ k - 2 * m)]; rfl
-    · rename_i h1
-      rw [aCoeff_of_ge (by omega : z1.size ≤ k - m)]
-      split
-      · rfl
-      · rename_i h2
-        rw [aCoeff_of_ge (by omega : z2.size ≤ k - 2 * m)]; rfl
+  · rename_i hz0
+    rw [aCoeff_aCombineP3NoZ0 m m2 z1 z2 n n2 _ (by omega) h2sz k, hacc2]
+    by_cases hk1 : k < n1
+    · have hk2 : k < n2 := by omega
+      have hkm : k < m := by omega
+      have hk2m : k < 2 * m := by omega
+      simp [hk1, hk2, hkm, hk2m]
+    · by_cases hk2 : k < n2
+      · have hkm : ¬ (k < m) := by omega
+        have hk2m : k < 2 * m := by omega
+        simp [hk1, hk2, hkm, hk2m]
+      · by_cases hkn : k < n
+        · have hkm : ¬ (k < m) := by omega
+          have hk2m : ¬ (k < 2 * m) := by omega
+          have hz0k : aCoeff z0 k = 0 := aCoeff_of_ge (by omega : z0.size ≤ k)
+          simp [hk2, hkn, hkm, hk2m, hm2, hz0k]
+        · have h0 : z0.size ≤ k := by omega
+          rw [aCoeff_of_ge h0]
+          simp only [hk2, hkn, ↓reduceIte]
+          split
+          · split
+            · rfl
+            · rename_i h2; rw [aCoeff_of_ge (by omega : z2.size ≤ k - 2 * m)]; rfl
+          · rename_i h1
+            rw [aCoeff_of_ge (by omega : z1.size ≤ k - m)]
+            split
+            · rfl
+            · rename_i h2; rw [aCoeff_of_ge (by omega : z2.size ≤ k - 2 * m)]; rfl
+  · rename_i hz0
+    rw [aCoeff_aCombineP3 m m2 z0 z1 z2 n n2 _ (by omega) h2sz k, hacc2]
+    by_cases hk1 : k < n1
+    · have hk2 : k < n2 := by omega
+      have hkm : k < m := by omega
+      have hk2m : k < 2 * m := by omega
+      simp [hk1, hk2, hkm, hk2m]
+    · by_cases hk2 : k < n2
+      · have hkm : ¬ (k < m) := by omega
+        have hk2m : k < 2 * m := by omega
+        simp [hk1, hk2, hkm, hk2m]
+      · by_cases hkn : k < n
+        · have hkm : ¬ (k < m) := by omega
+          have hk2m : ¬ (k < 2 * m) := by omega
+          simp [hk2, hkn, hkm, hk2m, hm2]
+        · have h0 : z0.size ≤ k := by omega
+          rw [aCoeff_of_ge h0]
+          simp only [hk2, hkn, ↓reduceIte]
+          split
+          · split
+            · rfl
+            · rename_i h2; rw [aCoeff_of_ge (by omega : z2.size ≤ k - 2 * m)]; rfl
+          · rename_i h1
+            rw [aCoeff_of_ge (by omega : z1.size ≤ k - m)]
+            split
+            · rfl
+            · rename_i h2; rw [aCoeff_of_ge (by omega : z2.size ≤ k - 2 * m)]; rfl
 
 /-- Verified unboxed `Array Int` Karatsuba multiplication (`O(n^{1.585})`, falling back to
     in-place `RC=1` `aMulSchoolbookInt` below `max cutoff 2`). -/
@@ -1124,7 +1382,7 @@ def aMulKaratsubaInt (cutoff : Nat := 32) (a b : Array Int) : Array Int :=
       simp only [a0, a1, b0, b1, Array.size_extract]; omega
     let z0 := aMulKaratsubaInt cutoff a0 b0
     let z2 := aMulKaratsubaInt cutoff a1 b1
-    let z1 := aSub (aSub (aMulKaratsubaInt cutoff (aAdd a0 a1) (aAdd b0 b1)) z0) z2
+    let z1 := aSubSub (aMulKaratsubaInt cutoff (aAdd a0 a1) (aAdd b0 b1)) z0 z2
     aCombineKaratsuba m z0 z1 z2
 termination_by max a.size b.size
 
@@ -1214,17 +1472,17 @@ theorem aCoeff_aMulKaratsubaInt (cutoff : Nat) (a b : Array Int) (k : Nat) :
           h11]
       grind
     change Rat.ofInt (aCoeff (aCombineKaratsuba m (aMulKaratsubaInt cutoff a0 b0)
-        (aSub (aSub (aMulKaratsubaInt cutoff (aAdd a0 a1) (aAdd b0 b1))
-                    (aMulKaratsubaInt cutoff a0 b0))
-              (aMulKaratsubaInt cutoff a1 b1))
+        (aSubSub (aMulKaratsubaInt cutoff (aAdd a0 a1) (aAdd b0 b1))
+                 (aMulKaratsubaInt cutoff a0 b0)
+                 (aMulKaratsubaInt cutoff a1 b1))
         (aMulKaratsubaInt cutoff a1 b1)) k) = _
     rw [hrhs, aCoeff_aCombineKaratsuba, rat_ofInt_add, rat_ofInt_add, ih0]
-    have hz1 : ∀ j, Rat.ofInt (aCoeff (aSub (aSub (aMulKaratsubaInt cutoff (aAdd a0 a1) (aAdd b0 b1))
-                                                  (aMulKaratsubaInt cutoff a0 b0))
-                                            (aMulKaratsubaInt cutoff a1 b1)) j) =
+    have hz1 : ∀ j, Rat.ofInt (aCoeff (aSubSub (aMulKaratsubaInt cutoff (aAdd a0 a1) (aAdd b0 b1))
+                                               (aMulKaratsubaInt cutoff a0 b0)
+                                               (aMulKaratsubaInt cutoff a1 b1)) j) =
         dCoeff (dMulSchoolbook ra0 rb1) j + dCoeff (dMulSchoolbook ra1 rb0) j := by
       intro j
-      rw [aCoeff_aSub, aCoeff_aSub, rat_ofInt_sub, rat_ofInt_sub, ih2, ih0, ih1,
+      rw [aCoeff_aSubSub, rat_ofInt_sub, rat_ofInt_sub, ih2, ih0, ih1,
           dCoeff_dMulSchoolbook_add_left, dCoeff_dMulSchoolbook_add_right,
           dCoeff_dMulSchoolbook_add_right]
       grind
@@ -1236,6 +1494,235 @@ theorem aCoeff_aMulKaratsubaInt (cutoff : Nat) (a b : Array Int) (k : Nat) :
       · simp [hkm, h2m, hz1 (k - m), rat_ofInt_zero, Rat.add_zero]
       · simp [hkm, h2m, hz1 (k - m), ih1 (k - 2 * m)]
 termination_by max a.size b.size
+
+/-- In-place `RC=1` half-work schoolbook squaring loop: accumulates `a[i]^2` at `2*i` and
+    `(2 * a[i]) * a[j]` at `i + j` for `j > i` via `aScaleAddAtLoop` (`n(n+1)/2` ops vs `n^2`). -/
+def aSqrSchoolbookLoop (a : Array Int) (i : Nat) (out : Array Int)
+    (hsize : a.size + a.size - 1 ≤ out.size) : Array Int :=
+  if hi : i < a.size then
+    let ci := a[i]
+    if ci == 0 then
+      aSqrSchoolbookLoop a (i + 1) out hsize
+    else
+      let idx := i + i
+      have hidx : idx < out.size := by omega
+      let out1 := out.set idx (out[idx] + ci * ci) hidx
+      have hsc : i + a.size ≤ out1.size := by
+        have hsz : out1.size = out.size := by simp [out1]
+        omega
+      let out2 := aScaleAddAtLoop i (ci + ci) a (i + 1) out1 hsc
+      have hsize' : a.size + a.size - 1 ≤ out2.size := by
+        have hsz : out2.size = out.size := by
+          rw [aScaleAddAtLoop_size, Array.size_set]
+        omega
+      aSqrSchoolbookLoop a (i + 1) out2 hsize'
+  else
+    out
+termination_by a.size - i
+
+/-- Verified in-place `RC=1` unboxed `Array Int` schoolbook squaring (`n(n+1)/2` multiply-adds). -/
+def aSqrSchoolbookInt (a : Array Int) : Array Int :=
+  if a.isEmpty then #[]
+  else
+    let out := Array.replicate (a.size + a.size - 1) (0 : Int)
+    aSqrSchoolbookLoop a 0 out (by simp [out])
+
+private theorem aSqrSchoolbookLoop_spec (a : Array Int) (i : Nat) (out : Array Int)
+    (hsize : a.size + a.size - 1 ≤ out.size) (k : Nat) :
+    Rat.ofInt (aCoeff (aSqrSchoolbookLoop a i out hsize) k) =
+      Rat.ofInt (aCoeff out k) +
+        dCoeff (dShift (i + i)
+          (dMulSchoolbook ((a.toList.drop i).map Rat.ofInt) ((a.toList.drop i).map Rat.ofInt))) k := by
+  unfold aSqrSchoolbookLoop
+  split
+  · rename_i hi
+    dsimp only
+    have hdrop : a.toList.drop i = a[i] :: a.toList.drop (i + 1) := by
+      have hi' : i < a.toList.length := by simpa using hi
+      simpa using List.drop_eq_getElem_cons hi'
+    have hstep_rhs :
+        dCoeff (dShift (i + i)
+          (dMulSchoolbook ((a.toList.drop i).map Rat.ofInt) ((a.toList.drop i).map Rat.ofInt))) k =
+        (if k = i + i then Rat.ofInt (a[i] * a[i])
+         else if k < i + (i + 1) then 0
+         else Rat.ofInt ((a[i] + a[i]) * aCoeff a (k - i))) +
+        dCoeff (dShift ((i + 1) + (i + 1))
+          (dMulSchoolbook ((a.toList.drop (i + 1)).map Rat.ofInt)
+                          ((a.toList.drop (i + 1)).map Rat.ofInt))) k := by
+      rw [hdrop, List.map_cons, dMulSchoolbook]
+      simp only [dCoeff_dShift, dCoeff_dAdd, dCoeff_dScale]
+      by_cases hklt : k < i + i
+      · have hk1 : ¬ (k = i + i) := by omega
+        have hk2 : k < i + (i + 1) := by omega
+        have hk3 : k < (i + 1) + (i + 1) := by omega
+        simp [hklt, hk1, hk2, hk3, Rat.add_zero]
+      · by_cases hkeq : k = i + i
+        · subst hkeq
+          have hk3 : i + i < (i + 1) + (i + 1) := by omega
+          have hsub : i + i - (i + i) = 0 := by omega
+          simp [hklt, hk3, hsub, rat_ofInt_mul, Rat.add_zero]
+        · have hk2 : ¬ (k < i + (i + 1)) := by omega
+          have hnz : k - (i + i) ≠ 0 := by omega
+          have hsub1 : k - (i + i) = (k - (i + i) - 1) + 1 := by omega
+          have hcoeff_drop : dCoeff ((a.toList.drop (i + 1)).map Rat.ofInt) (k - (i + i) - 1) =
+              Rat.ofInt (aCoeff a (k - i)) := by
+            rw [dCoeff_map_ofInt]
+            congr 1
+            unfold aCoeff
+            by_cases hki : k - i < a.size
+            · have hlt' : k - (i + i) - 1 < a.size - (i + 1) := by omega
+              have hidx_eq : i + 1 + (k - (i + i) - 1) = k - i := by omega
+              simp [hki, hlt', hidx_eq]
+            · have hge' : ¬ (k - (i + i) - 1 < a.size - (i + 1)) := by omega
+              simp [hki, hge']
+          rw [hsub1]
+          simp only [hklt, hkeq, hk2, ↓reduceIte, dCoeff_cons_succ, dCoeff_dMulSchoolbook_cons_right,
+            hcoeff_drop]
+          by_cases hk1 : k = i + (i + 1)
+          · subst hk1
+            have h0 : i + (i + 1) - (i + i) - 1 = 0 := by omega
+            have hlt2 : i + (i + 1) < (i + 1) + (i + 1) := by omega
+            simp only [h0, hlt2, ↓reduceIte, Rat.add_zero, rat_ofInt_mul, rat_ofInt_add]
+            grind
+          · have hnz' : k - (i + i) - 1 ≠ 0 := by omega
+            have hnot2 : ¬ (k < (i + 1) + (i + 1)) := by omega
+            have hsub2 : k - (i + i) - 1 - 1 = k - ((i + 1) + (i + 1)) := by omega
+            simp only [hnz', hnot2, ↓reduceIte, hsub2, rat_ofInt_mul, rat_ofInt_add]
+            grind
+    split
+    · rename_i hci0
+      have hci : a[i] = 0 := eq_of_beq hci0
+      rw [aSqrSchoolbookLoop_spec a (i + 1) out hsize k, hstep_rhs, hci]
+      simp [rat_ofInt_zero, Rat.zero_add]
+    · have hidx : i + i < out.size := by omega
+      have hsc : i + a.size ≤ (out.set (i + i) (out[i + i] + a[i] * a[i]) hidx).size := by
+        rw [Array.size_set]; omega
+      rw [aSqrSchoolbookLoop_spec a (i + 1) _ _ k,
+          aCoeff_aScaleAddAtLoop i (a[i] + a[i]) a (i + 1) _ hsc k,
+          aCoeff_set, hstep_rhs, rat_ofInt_add]
+      by_cases hkeq : k = i + i
+      · subst hkeq
+        have hlt : i + i < i + (i + 1) := by omega
+        simp [hlt, rat_ofInt_add, rat_ofInt_zero, aCoeff, hidx, Rat.zero_add, Rat.add_assoc]
+      · by_cases hklt : k < i + (i + 1)
+        · simp [hkeq, hklt, rat_ofInt_zero, Rat.add_zero, Rat.zero_add]
+        · simp [hkeq, hklt, Rat.add_assoc]
+  · rename_i hge
+    have hdrop : a.toList.drop i = [] := List.drop_eq_nil_of_le (by simp; omega)
+    rw [hdrop, List.map_nil, dMulSchoolbook, dCoeff_dShift]
+    split <;> simp [Rat.add_zero]
+termination_by a.size - i
+
+/-- **In-place `Array Int` Schoolbook Squaring Equivalence Theorem (zero `sorry`)**:
+    `aSqrSchoolbookInt a` produces the exact same coefficients as `dMulSchoolbook a a`. -/
+theorem aCoeff_aSqrSchoolbookInt (a : Array Int) (k : Nat) :
+    Rat.ofInt (aCoeff (aSqrSchoolbookInt a) k) =
+      dCoeff (dMulSchoolbook (a.toList.map Rat.ofInt) (a.toList.map Rat.ofInt)) k := by
+  unfold aSqrSchoolbookInt
+  split
+  · rename_i hemp
+    have ha : a.size = 0 := Array.isEmpty_iff_size_eq_zero.mp hemp
+    have hal : a.toList = [] := List.eq_nil_of_length_eq_zero (by simpa using ha)
+    simp [hal, dMulSchoolbook, aCoeff, rat_ofInt_zero]
+  · have hspec := aSqrSchoolbookLoop_spec a 0 (Array.replicate (a.size + a.size - 1) 0) (by simp) k
+    simpa [aCoeff_replicate_zero, rat_ofInt_zero, Rat.zero_add, dCoeff_dShift] using hspec
+
+/-- Verified unboxed `Array Int` Karatsuba squaring (`O(n^{1.585})`, single split, single `aAdd`,
+    and half-work `aSqrSchoolbookInt` base case below `max cutoff 2`). -/
+def aSqrKaratsubaInt (cutoff : Nat := 32) (a : Array Int) : Array Int :=
+  let c := max cutoff 2
+  if h : a.size < c then
+    aSqrSchoolbookInt a
+  else
+    let m := a.size / 2
+    let a0 := a.extract 0 m
+    let a1 := a.extract m a.size
+    have h0 : a0.size < a.size := by simp only [a0, Array.size_extract]; omega
+    have h1 : a1.size < a.size := by simp only [a1, Array.size_extract]; omega
+    have h2 : (aAdd a0 a1).size < a.size := by
+      rw [aAdd_size]; simp only [a0, a1, Array.size_extract]; omega
+    let z0 := aSqrKaratsubaInt cutoff a0
+    let z2 := aSqrKaratsubaInt cutoff a1
+    let s := aAdd a0 a1
+    let z1 := aSubSub (aSqrKaratsubaInt cutoff s) z0 z2
+    aCombineKaratsuba m z0 z1 z2
+termination_by a.size
+
+/-- **`Array Int` Karatsuba Squaring Equivalence Theorem (zero `sorry`)**:
+    `aSqrKaratsubaInt` matches `dMulSchoolbook a a` over `Rat` at every index `k`. -/
+theorem aCoeff_aSqrKaratsubaInt (cutoff : Nat) (a : Array Int) (k : Nat) :
+    Rat.ofInt (aCoeff (aSqrKaratsubaInt cutoff a) k) =
+      dCoeff (dMulSchoolbook (a.toList.map Rat.ofInt) (a.toList.map Rat.ofInt)) k := by
+  unfold aSqrKaratsubaInt
+  dsimp only
+  split
+  · exact aCoeff_aSqrSchoolbookInt a k
+  · rename_i hge
+    let m := a.size / 2
+    let a0 := a.extract 0 m
+    let a1 := a.extract m a.size
+    have h0 : a0.size < a.size := by simp only [a0, Array.size_extract]; omega
+    have h1 : a1.size < a.size := by simp only [a1, Array.size_extract]; omega
+    have h2 : (aAdd a0 a1).size < a.size := by
+      rw [aAdd_size]; simp only [a0, a1, Array.size_extract]; omega
+    let ra0 := a0.toList.map Rat.ofInt
+    let ra1 := a1.toList.map Rat.ofInt
+    have ih0 : ∀ j, Rat.ofInt (aCoeff (aSqrKaratsubaInt cutoff a0) j) =
+        dCoeff (dMulSchoolbook ra0 ra0) j :=
+      fun j => aCoeff_aSqrKaratsubaInt cutoff a0 j
+    have ih1 : ∀ j, Rat.ofInt (aCoeff (aSqrKaratsubaInt cutoff a1) j) =
+        dCoeff (dMulSchoolbook ra1 ra1) j :=
+      fun j => aCoeff_aSqrKaratsubaInt cutoff a1 j
+    have ih2 : ∀ j, Rat.ofInt (aCoeff (aSqrKaratsubaInt cutoff (aAdd a0 a1)) j) =
+        dCoeff (dMulSchoolbook (dAdd ra0 ra1) (dAdd ra0 ra1)) j := by
+      intro j
+      rw [aCoeff_aSqrKaratsubaInt cutoff (aAdd a0 a1) j,
+          dCoeff_dMulSchoolbook_congr_left (aAdd_map_ofInt_dCoeff a0 a1),
+          dCoeff_dMulSchoolbook_congr_right (aAdd_map_ofInt_dCoeff a0 a1)]
+    have h11 : dCoeff (dMulSchoolbook (dShift m ra1) (dShift m ra1)) k =
+        dCoeff (dShift (2 * m) (dMulSchoolbook ra1 ra1)) k := by
+      rw [dCoeff_dMulSchoolbook_shift_left,
+          dCoeff_dShift_congr (fun j => dCoeff_dMulSchoolbook_shift_right m ra1 ra1 j),
+          dCoeff_dShift_dShift]
+      have h2m : m + m = 2 * m := by omega
+      rw [h2m]
+    have hrhs : dCoeff (dMulSchoolbook (a.toList.map Rat.ofInt) (a.toList.map Rat.ofInt)) k =
+        dCoeff (dMulSchoolbook ra0 ra0) k +
+        (dCoeff (dShift m (dMulSchoolbook ra0 ra1)) k +
+         dCoeff (dShift m (dMulSchoolbook ra1 ra0)) k) +
+        dCoeff (dShift (2 * m) (dMulSchoolbook ra1 ra1)) k := by
+      rw [dCoeff_dMulSchoolbook_congr_left (extract_split_dCoeff a m),
+          dCoeff_dMulSchoolbook_congr_right (extract_split_dCoeff a m),
+          dCoeff_dMulSchoolbook_add_left,
+          dCoeff_dMulSchoolbook_add_right,
+          dCoeff_dMulSchoolbook_add_right,
+          dCoeff_dMulSchoolbook_shift_right,
+          dCoeff_dMulSchoolbook_shift_left,
+          h11]
+      grind
+    change Rat.ofInt (aCoeff (aCombineKaratsuba m (aSqrKaratsubaInt cutoff a0)
+        (aSubSub (aSqrKaratsubaInt cutoff (aAdd a0 a1))
+                 (aSqrKaratsubaInt cutoff a0)
+                 (aSqrKaratsubaInt cutoff a1))
+        (aSqrKaratsubaInt cutoff a1)) k) = _
+    rw [hrhs, aCoeff_aCombineKaratsuba, rat_ofInt_add, rat_ofInt_add, ih0]
+    have hz1 : ∀ j, Rat.ofInt (aCoeff (aSubSub (aSqrKaratsubaInt cutoff (aAdd a0 a1))
+                                               (aSqrKaratsubaInt cutoff a0)
+                                               (aSqrKaratsubaInt cutoff a1)) j) =
+        dCoeff (dMulSchoolbook ra0 ra1) j + dCoeff (dMulSchoolbook ra1 ra0) j := by
+      intro j
+      rw [aCoeff_aSubSub, rat_ofInt_sub, rat_ofInt_sub, ih2, ih0, ih1,
+          dCoeff_dMulSchoolbook_add_left, dCoeff_dMulSchoolbook_add_right,
+          dCoeff_dMulSchoolbook_add_right]
+      grind
+    simp only [dCoeff_dShift]
+    by_cases hkm : k < m
+    · have h2m : k < 2 * m := by omega
+      simp [hkm, h2m, rat_ofInt_zero, Rat.add_zero]
+    · by_cases h2m : k < 2 * m
+      · simp [hkm, h2m, hz1 (k - m), rat_ofInt_zero, Rat.add_zero]
+      · simp [hkm, h2m, hz1 (k - m), ih1 (k - 2 * m)]
+termination_by a.size
 
 /-! ### Fast Single-Pass `Array Int` Grid Bridge (`extractIntGrid` & `fromIntGrid`) -/
 
