@@ -77,6 +77,141 @@ struct SlideAnnotationCanvas: UIViewRepresentable {
     }
 }
 
+// MARK: - Compact Side-by-Side Split Slide Pane (Left 46% in `Split` Mode)
+
+struct SplitSlidePane: View {
+    @Bindable var store: InfPadStore
+    @State private var showNotes = true
+
+    private var theme: InfTheme { store.theme }
+    private var currentSlide: InfSlide { SlideDeck.slides[store.currentSlideIndex] }
+
+    var body: some View {
+        VStack(spacing: 10) {
+            // Compact nav + ink + Stage Clean bar
+            HStack(spacing: 6) {
+                Button { store.prevSlide() } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 16, weight: .bold))
+                        .frame(width: 36, height: 36)
+                }
+                .disabled(store.currentSlideIndex == 0)
+
+                Text("\(store.currentSlideIndex + 1)/\(SlideDeck.slides.count)")
+                    .font(.system(size: 16, weight: .bold, design: .monospaced))
+                    .monospacedDigit()
+
+                Button { store.nextSlide() } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 16, weight: .bold))
+                        .frame(width: 36, height: 36)
+                }
+                .disabled(store.currentSlideIndex >= SlideDeck.slides.count - 1)
+
+                Divider().frame(height: 18)
+
+                Button { store.slideAnnotationTool = .pen } label: {
+                    Image(systemName: "pencil.tip")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(store.slideAnnotationTool == .pen ? .white : theme.primaryInk)
+                        .frame(width: 34, height: 34)
+                        .background(store.slideAnnotationTool == .pen ? theme.accentCobalt : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+
+                Button { store.clearSlideDrawing(index: store.currentSlideIndex) } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(width: 34, height: 34)
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) { showNotes.toggle() }
+                } label: {
+                    Text(showNotes ? "Hide Notes" : "Notes")
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(theme.elevatedCard, in: Capsule())
+                        .overlay(Capsule().stroke(theme.borderSubtle, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    store.activeTab = .slides
+                    store.isAirPlayClean = true
+                } label: {
+                    Image(systemName: "tv")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 36, height: 34)
+                        .background(theme.accentCobalt, in: RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Stage Clean Fullscreen")
+            }
+            .foregroundStyle(theme.primaryInk)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
+
+            // 16:9 Live Slide Stage with Pencil overlay
+            SlideAudienceView(
+                store: store,
+                slide: currentSlide,
+                interactiveDemoButtons: true,
+                allowAnnotationInput: true
+            )
+            .aspectRatio(16.0 / 9.0, contentMode: .fit)
+            .gesture(
+                DragGesture(minimumDistance: 45)
+                    .onEnded { val in
+                        if val.translation.width < -45 { store.nextSlide() }
+                        else if val.translation.width > 45 { store.prevSlide() }
+                    }
+            )
+
+            // Compact Speaker Notes & Pace Anchor beneath the slide
+            if showNotes {
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("SPEAKER CUES  ·  \(currentSlide.startTime) -> \(currentSlide.gateTime)")
+                                .font(.system(size: 13, weight: .bold, design: .monospaced))
+                                .foregroundStyle(theme.accentCobalt)
+                            Spacer()
+                            Text(currentSlide.notes.paceAnchor)
+                                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                .foregroundStyle(theme.secondaryInk)
+                        }
+                        Text(currentSlide.notes.broadStroke)
+                            .font(.system(size: 16, weight: .medium, design: .rounded))
+                            .foregroundStyle(theme.primaryInk)
+                        ForEach(currentSlide.notes.microdetails, id: \.self) { line in
+                            HStack(alignment: .top, spacing: 6) {
+                                Text("•").foregroundStyle(theme.accentCobalt)
+                                Text(line)
+                                    .font(.system(size: 14.5, design: .rounded))
+                                    .foregroundStyle(theme.secondaryInk)
+                            }
+                        }
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
+            } else {
+                Spacer(minLength: 0)
+            }
+        }
+    }
+}
+
 // MARK: - Main AirPlay Slides View (Presenter Split + 1-Tap Stage Clean)
 
 struct SlidesView: View {
@@ -108,7 +243,7 @@ struct SlidesView: View {
         }
     }
 
-    // MARK: - 1-Tap AirPlay Clean Fullscreen Stage
+    // MARK: - 1-Tap Stage Clean Fullscreen View (for Screen Mirroring)
 
     private var airPlayCleanStageView: some View {
         ZStack(alignment: .bottomTrailing) {
@@ -219,7 +354,6 @@ struct SlidesView: View {
 
     private var slidesToolbar: some View {
         HStack(spacing: 10) {
-            // Slide navigation
             HStack(spacing: 4) {
                 Button { store.prevSlide() } label: {
                     Image(systemName: "chevron.left")
@@ -245,7 +379,6 @@ struct SlidesView: View {
             .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
 
-            // Annotation ink tools
             HStack(spacing: 4) {
                 inkToolPill(.pen, icon: "pencil.tip", label: "Pen")
                 inkToolPill(.highlighter, icon: "highlighter", label: "Hi")
@@ -285,18 +418,19 @@ struct SlidesView: View {
 
             Spacer()
 
-            // External display live badge
-            if externalDisplay.isExternalDisplayConnected {
-                HStack(spacing: 6) {
-                    Circle().fill(theme.successGreen).frame(width: 9, height: 9)
-                    Text("AirPlay Display Live")
-                        .font(.system(size: 15, weight: .bold, design: .rounded))
-                        .foregroundStyle(theme.successGreen)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(theme.successGreen.opacity(0.12), in: Capsule())
+            // Subtle display mode indicator (Extended TV vs Mirrored)
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(externalDisplay.isExternalDisplayConnected ? theme.successGreen : theme.secondaryInk.opacity(0.5))
+                    .frame(width: 8, height: 8)
+                Text(externalDisplay.isExternalDisplayConnected ? "Extended TV" : "Mirrored")
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    .foregroundStyle(externalDisplay.isExternalDisplayConnected ? theme.successGreen : theme.secondaryInk)
             }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(theme.surfaceCard, in: Capsule())
+            .overlay(Capsule().stroke(theme.borderSubtle, lineWidth: 1))
 
             // Native AVKit AirPlay Route Picker
             AirPlayRoutePickerButton(
@@ -307,7 +441,6 @@ struct SlidesView: View {
             .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
 
-            // 1-Tap AirPlay Clean Stage toggle
             Button {
                 store.isAirPlayClean = true
             } label: {
@@ -366,7 +499,6 @@ struct SlidesView: View {
                     }
             )
 
-            // Slide filmstrip / Next-slide quick preview bar
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(SlideDeck.slides) { s in
@@ -399,8 +531,6 @@ struct SlidesView: View {
             }
         }
     }
-
-    // MARK: - Presenter Timer + Structured Speaker Notes
 
     private var presenterNotesColumn: some View {
         ScrollView(.vertical, showsIndicators: true) {
@@ -455,7 +585,6 @@ struct SlidesView: View {
                     }
                 }
 
-                // Presenter-only collapsible Q&A cheat sheet on Slide 8
                 if !currentSlide.qaItems.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
                         Button {
@@ -595,6 +724,38 @@ struct SlidesView: View {
     }
 }
 
+// MARK: - Monospaced Source Code Card for Slides 4, 5, 6
+
+private struct SlideCodeCard: View {
+    let badge: String
+    let code: String
+    let accent: Color
+    let theme: InfTheme
+    let compact: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: compact ? 4 : 6) {
+            Text(badge)
+                .font(.system(size: compact ? 10.5 : 13, weight: .bold, design: .monospaced))
+                .foregroundStyle(accent)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 2)
+                .background(accent.opacity(0.13), in: Capsule())
+
+            Text(code)
+                .font(.system(size: compact ? 10.5 : 13.5, weight: .medium, design: .monospaced))
+                .foregroundStyle(theme.primaryInk)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .minimumScaleFactor(0.75)
+        }
+        .padding(compact ? 8 : 11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(theme.paperBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(accent.opacity(0.28), lineWidth: 1))
+    }
+}
+
 // MARK: - Clean 16:9 Audience Slide Face + Bespoke SwiftUI Visuals + Pencil Overlay
 
 struct SlideAudienceView: View {
@@ -615,9 +776,9 @@ struct SlideAudienceView: View {
     var body: some View {
         GeometryReader { geo in
             let compact = geo.size.width < 760
-            let titleSize: CGFloat = compact ? 26 : 36
-            let thesisSize: CGFloat = compact ? 16 : 21
-            let detailSize: CGFloat = compact ? 13.5 : 17
+            let titleSize: CGFloat = compact ? 22 : 34
+            let thesisSize: CGFloat = compact ? 14 : 19.5
+            let detailSize: CGFloat = compact ? 12 : 16
 
             ZStack {
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
@@ -631,61 +792,56 @@ struct SlideAudienceView: View {
                 PaperDotGrid(dotColor: theme.canvasDotColor.opacity(0.55))
                     .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
 
-                VStack(alignment: .leading, spacing: compact ? 10 : 16) {
-                    // Header row
+                VStack(alignment: .leading, spacing: compact ? 8 : 14) {
                     HStack(alignment: .center) {
                         Text(slide.title)
                             .font(.system(size: titleSize, weight: .bold, design: .rounded))
                             .foregroundStyle(theme.primaryInk)
                             .lineLimit(2)
-                            .minimumScaleFactor(0.75)
+                            .minimumScaleFactor(0.72)
 
-                        Spacer(minLength: 12)
+                        Spacer(minLength: 10)
 
                         Text("\(slide.id + 1) / \(SlideDeck.slides.count)")
-                            .font(.system(size: compact ? 14 : 17, weight: .bold, design: .monospaced))
+                            .font(.system(size: compact ? 12.5 : 16, weight: .bold, design: .monospaced))
                             .foregroundStyle(theme.secondaryInk)
-                            .padding(.horizontal, 11)
-                            .padding(.vertical, 5)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
                             .background(theme.surfaceCard, in: Capsule())
                     }
 
-                    // Big top-down thesis
                     Text(slide.thesis)
                         .font(.system(size: thesisSize, weight: .medium, design: .rounded))
                         .foregroundStyle(theme.secondaryInk)
-                        .lineSpacing(3)
+                        .lineSpacing(2)
                         .fixedSize(horizontal: false, vertical: true)
 
-                    // Bespoke native SwiftUI visual centerpiece
                     slideVisual(compact: compact)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    // 2-3 sharp microdetails along the bottom
                     if slide.visual != .liveDemoLauncher {
-                        VStack(alignment: .leading, spacing: compact ? 5 : 8) {
+                        VStack(alignment: .leading, spacing: compact ? 4 : 7) {
                             ForEach(slide.microdetails, id: \.self) { detail in
-                                HStack(alignment: .top, spacing: 9) {
+                                HStack(alignment: .top, spacing: 8) {
                                     Circle()
                                         .fill(theme.accentCobalt)
-                                        .frame(width: compact ? 6 : 8, height: compact ? 6 : 8)
-                                        .padding(.top, compact ? 6 : 8)
+                                        .frame(width: compact ? 5 : 7, height: compact ? 5 : 7)
+                                        .padding(.top, compact ? 5 : 7)
                                     Text(detail)
                                         .font(.system(size: detailSize, weight: .medium, design: .rounded))
                                         .foregroundStyle(theme.primaryInk)
                                         .lineLimit(2)
-                                        .minimumScaleFactor(0.8)
+                                        .minimumScaleFactor(0.78)
                                 }
                             }
                         }
-                        .padding(compact ? 10 : 14)
+                        .padding(compact ? 8 : 12)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(theme.surfaceCard.opacity(0.85), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .background(theme.surfaceCard.opacity(0.85), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
                 }
-                .padding(compact ? 18 : 30)
+                .padding(compact ? 14 : 26)
 
-                // Live transparent Apple Pencil overlay on top of every slide
                 SlideAnnotationCanvas(
                     drawing: drawingBinding,
                     tool: store.slideAnnotationTool,
@@ -694,13 +850,12 @@ struct SlideAudienceView: View {
                     allowsInput: allowAnnotationInput
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                // On Slide 8 demo launcher or Slide 3 live jump, let Pencil draw while finger taps buttons cleanly
                 .allowsHitTesting(allowAnnotationInput && (slide.demoActions.isEmpty || store.slidePencilOnly))
             }
         }
     }
 
-    // MARK: - Bespoke Slide Visual Diagrams
+    // MARK: - Bespoke Slide Visual Diagrams (with Real Repo Code Cards on Slides 4, 5, 6)
 
     @ViewBuilder
     private func slideVisual(compact: Bool) -> some View {
@@ -725,17 +880,17 @@ struct SlideAudienceView: View {
     }
 
     private func titleHeroVisual(compact: Bool) -> some View {
-        VStack(spacing: compact ? 14 : 22) {
+        VStack(spacing: compact ? 12 : 20) {
             Text("H · ε = 1")
-                .font(.system(size: compact ? 48 : 74, weight: .bold, design: .monospaced))
+                .font(.system(size: compact ? 42 : 70, weight: .bold, design: .monospaced))
                 .foregroundStyle(theme.accentCobalt)
-                .padding(.horizontal, 32)
-                .padding(.vertical, compact ? 14 : 22)
-                .background(theme.accentCobalt.opacity(0.09), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(theme.accentCobalt.opacity(0.28), lineWidth: 1.5))
+                .padding(.horizontal, 28)
+                .padding(.vertical, compact ? 12 : 20)
+                .background(theme.accentCobalt.opacity(0.09), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(theme.accentCobalt.opacity(0.28), lineWidth: 1.5))
 
-            HStack(spacing: compact ? 10 : 18) {
-                heroPill(value: "112.6 ms -> 0.38 ms", label: "Dense 512x512 mul (296x)", compact: compact)
+            HStack(spacing: compact ? 8 : 16) {
+                heroPill(value: "112.6 ms -> 0.38 ms", label: "Dense 512×512 mul (296×)", compact: compact)
                 heroPill(value: "187 / 187", label: "7-engine diff parity", compact: compact)
                 heroPill(value: "0 sorry", label: "Core + 24 FloatLib thms", compact: compact)
             }
@@ -744,88 +899,84 @@ struct SlideAudienceView: View {
     }
 
     private func heroPill(value: String, label: String, compact: Bool) -> some View {
-        VStack(spacing: 5) {
+        VStack(spacing: 4) {
             Text(value)
-                .font(.system(size: compact ? 16 : 24, weight: .bold, design: .monospaced))
+                .font(.system(size: compact ? 14 : 22, weight: .bold, design: .monospaced))
                 .foregroundStyle(theme.primaryInk)
-                .minimumScaleFactor(0.75)
+                .minimumScaleFactor(0.72)
                 .lineLimit(1)
             Text(label)
-                .font(.system(size: compact ? 12 : 15, weight: .medium, design: .rounded))
+                .font(.system(size: compact ? 11 : 14, weight: .medium, design: .rounded))
                 .foregroundStyle(theme.secondaryInk)
                 .lineLimit(1)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, compact ? 10 : 16)
-        .padding(.horizontal, 10)
-        .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
+        .padding(.vertical, compact ? 8 : 14)
+        .padding(.horizontal, 8)
+        .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
     }
 
     private func continuumCutVisual(compact: Bool) -> some View {
-        VStack(spacing: compact ? 8 : 14) {
+        VStack(spacing: compact ? 6 : 12) {
             Canvas { ctx, size in
-                let padX: CGFloat = 36
+                let padX: CGFloat = 32
                 let midY = size.height * 0.56
                 let w = max(60, size.width - padX * 2)
 
-                // Main interval [a, b]
                 var axis = Path()
                 axis.move(to: CGPoint(x: padX, y: midY))
                 axis.addLine(to: CGPoint(x: padX + w, y: midY))
                 ctx.stroke(axis, with: .color(theme.primaryInk), lineWidth: 3)
 
-                // H subdivision ticks
                 let ticks = 28
                 for i in 0...ticks {
                     let x = padX + CGFloat(i) / CGFloat(ticks) * w
                     let isEnd = (i == 0 || i == ticks)
-                    let h: CGFloat = isEnd ? 22 : 11
+                    let h: CGFloat = isEnd ? 20 : 10
                     var t = Path()
                     t.move(to: CGPoint(x: x, y: midY - h))
                     t.addLine(to: CGPoint(x: x, y: midY + h))
                     ctx.stroke(t, with: .color(isEnd ? theme.primaryInk : theme.accentCobalt.opacity(0.65)), lineWidth: isEnd ? 3 : 1.8)
                 }
 
-                // Highlight one eps cell
                 let cellX0 = padX + 10.0 / CGFloat(ticks) * w
                 let cellX1 = padX + 11.0 / CGFloat(ticks) * w
-                let rect = CGRect(x: cellX0, y: midY - 26, width: max(8, cellX1 - cellX0), height: 26)
+                let rect = CGRect(x: cellX0, y: midY - 24, width: max(8, cellX1 - cellX0), height: 24)
                 ctx.fill(Path(rect), with: .color(theme.accentCobalt.opacity(0.28)))
                 ctx.stroke(Path(rect), with: .color(theme.accentCobalt), lineWidth: 2)
 
-                ctx.draw(Text("a").font(.system(size: compact ? 15 : 20, weight: .bold, design: .monospaced)).foregroundColor(theme.primaryInk), at: CGPoint(x: padX, y: midY + 34))
-                ctx.draw(Text("b").font(.system(size: compact ? 15 : 20, weight: .bold, design: .monospaced)).foregroundColor(theme.primaryInk), at: CGPoint(x: padX + w, y: midY + 34))
-                ctx.draw(Text("width ε = 1/H").font(.system(size: compact ? 14 : 18, weight: .bold, design: .monospaced)).foregroundColor(theme.accentCobalt), at: CGPoint(x: (cellX0 + cellX1) / 2, y: midY - 40))
-                ctx.draw(Text("H hyperfinite pieces").font(.system(size: compact ? 14 : 18, weight: .semibold, design: .rounded)).foregroundColor(theme.secondaryInk), at: CGPoint(x: padX + w * 0.72, y: midY - 38))
+                ctx.draw(Text("a").font(.system(size: compact ? 14 : 18, weight: .bold, design: .monospaced)).foregroundColor(theme.primaryInk), at: CGPoint(x: padX, y: midY + 30))
+                ctx.draw(Text("b").font(.system(size: compact ? 14 : 18, weight: .bold, design: .monospaced)).foregroundColor(theme.primaryInk), at: CGPoint(x: padX + w, y: midY + 30))
+                ctx.draw(Text("width ε = 1/H").font(.system(size: compact ? 13 : 17, weight: .bold, design: .monospaced)).foregroundColor(theme.accentCobalt), at: CGPoint(x: (cellX0 + cellX1) / 2, y: midY - 36))
+                ctx.draw(Text("H hyperfinite pieces").font(.system(size: compact ? 13 : 17, weight: .semibold, design: .rounded)).foregroundColor(theme.secondaryInk), at: CGPoint(x: padX + w * 0.72, y: midY - 34))
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            HStack(spacing: 14) {
+            HStack(spacing: 12) {
                 Label("Integrals -> hyperfinite sums", systemImage: "sum")
                 Spacer()
                 Label("ODEs -> H-step loops", systemImage: "arrow.triangle.2.circlepath")
                 Spacer()
-                Label("Ordered subring Q[H^Q]", systemImage: "function")
+                Label("Ordered subring ℚ[H^ℚ]", systemImage: "function")
             }
-            .font(.system(size: compact ? 13 : 17, weight: .semibold, design: .monospaced))
+            .font(.system(size: compact ? 11.5 : 16, weight: .semibold, design: .monospaced))
             .foregroundStyle(theme.accentCobalt)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(theme.accentCobalt.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(theme.accentCobalt.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
     }
 
     private func stepToDiracVisual(compact: Bool) -> some View {
-        VStack(spacing: compact ? 8 : 12) {
-            HStack(spacing: compact ? 12 : 20) {
-                // Left: Step curve L_H(x)
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("L_H(x) = 1 / (1 + exp(-Hx))")
-                        .font(.system(size: compact ? 13 : 17, weight: .bold, design: .monospaced))
+        VStack(spacing: compact ? 6 : 10) {
+            HStack(spacing: compact ? 10 : 18) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Lₕ(x) = 1 / (1 + exp(-H·x))")
+                        .font(.system(size: compact ? 12 : 16, weight: .bold, design: .monospaced))
                         .foregroundStyle(theme.accentCobalt)
                     Canvas { ctx, sz in
-                        let pad: CGFloat = 18
+                        let pad: CGFloat = 16
                         let rect = CGRect(x: pad, y: pad, width: sz.width - pad * 2, height: sz.height - pad * 2)
                         var guide = Path()
                         guide.move(to: CGPoint(x: rect.midX, y: rect.minY))
@@ -841,21 +992,20 @@ struct SlideAudienceView: View {
                             if i == 0 { curve.move(to: CGPoint(x: px, y: py)) }
                             else { curve.addLine(to: CGPoint(x: px, y: py)) }
                         }
-                        ctx.stroke(curve, with: .color(theme.accentCobalt), style: StrokeStyle(lineWidth: 3.2, lineCap: .round))
+                        ctx.stroke(curve, with: .color(theme.accentCobalt), style: StrokeStyle(lineWidth: 3.0, lineCap: .round))
                         let dot = CGRect(x: rect.midX - 5, y: rect.midY - 5, width: 10, height: 10)
                         ctx.fill(Path(ellipseIn: dot), with: .color(theme.accentCobalt))
                     }
-                    .background(theme.paperBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
+                    .background(theme.paperBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
                 }
 
-                // Right: Dirac spike L'_H(x)
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("L'_H(0) = H/4   (width ε, area 1)")
-                        .font(.system(size: compact ? 13 : 17, weight: .bold, design: .monospaced))
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Lₕ'(0) = H/4   (width ε, area 1)")
+                        .font(.system(size: compact ? 12 : 16, weight: .bold, design: .monospaced))
                         .foregroundStyle(Color(red: 0.604, green: 0.204, blue: 0.071))
                     Canvas { ctx, sz in
-                        let pad: CGFloat = 18
+                        let pad: CGFloat = 16
                         let rect = CGRect(x: pad, y: pad, width: sz.width - pad * 2, height: sz.height - pad * 2)
                         var guide = Path()
                         guide.move(to: CGPoint(x: rect.midX, y: rect.minY))
@@ -866,7 +1016,7 @@ struct SlideAudienceView: View {
                         for i in 0...120 {
                             let u = -1.0 + 2.0 * Double(i) / 120.0
                             let s = 1.0 / (1.0 + exp(-28.0 * u))
-                            let y = 4.0 * s * (1.0 - s) // normalized peak 1.0 representing H/4
+                            let y = 4.0 * s * (1.0 - s)
                             let px = rect.minX + CGFloat((u + 1.0) / 2.0) * rect.width
                             let py = rect.maxY - CGFloat(y) * rect.height
                             if i == 0 { curve.move(to: CGPoint(x: px, y: py)) }
@@ -878,10 +1028,10 @@ struct SlideAudienceView: View {
                         fill.closeSubpath()
                         let spikeColor = Color(red: 0.76, green: 0.25, blue: 0.05)
                         ctx.fill(fill, with: .color(spikeColor.opacity(0.14)))
-                        ctx.stroke(curve, with: .color(spikeColor), style: StrokeStyle(lineWidth: 3.2, lineCap: .round))
+                        ctx.stroke(curve, with: .color(spikeColor), style: StrokeStyle(lineWidth: 3.0, lineCap: .round))
                     }
-                    .background(theme.paperBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
+                    .background(theme.paperBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
                 }
             }
 
@@ -891,14 +1041,14 @@ struct SlideAudienceView: View {
                     Button {
                         store.jumpToCalculator(expr: action.expr)
                     } label: {
-                        HStack(spacing: 8) {
+                        HStack(spacing: 7) {
                             Image(systemName: "bolt.fill")
                             Text(action.title)
                         }
-                        .font(.system(size: compact ? 15 : 18, weight: .bold, design: .rounded))
+                        .font(.system(size: compact ? 14 : 17, weight: .bold, design: .rounded))
                         .foregroundStyle(.white)
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 9)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
                         .background(theme.accentCobalt, in: Capsule())
                     }
                     .buttonStyle(.plain)
@@ -907,155 +1057,150 @@ struct SlideAudienceView: View {
         }
     }
 
+    // Slide 4: Real 2024 vs 2026 Lean Source Code Cards
     private func firstTriesVisual(compact: Bool) -> some View {
-        HStack(spacing: compact ? 10 : 16) {
-            timelineCard(
-                year: "2022",
-                title: "Julia Dict",
-                code: "# TODO: convolution\n# TODO: property based testing",
-                issue: "Unordered Dict, stalled on series mul and testing",
+        VStack(spacing: compact ? 8 : 12) {
+            SlideCodeCard(
+                badge: "Jul 2024 · 0088b08 · Lean 4.10 + Mathlib",
+                code: """
+                import Mathlib
+                abbrev CoeffMap := Lean.HashMap Exponent Coeff  -- TODO use RbMap instead bc sorted?
+                syntax "#[" term " | " compClause,* "]" : term  -- custom macro_rules DSL
+                """,
+                accent: Color(red: 0.604, green: 0.204, blue: 0.071),
+                theme: theme,
                 compact: compact
             )
-            timelineCard(
-                year: "2024",
-                title: "Python alok/inf & infnum",
-                code: "Crowell JS fork\n+ Hypothesis PBT",
-                issue: "Good exploration, 31 bugs in 2024 inf, unverified",
-                compact: compact
-            )
-            timelineCard(
-                year: "Jul 2024",
-                title: "Lean 4 HashMap",
-                code: "-- TODO use RbMap\n-- instead bc sorted?",
-                issue: "O(n^2) mul, silent BEq (H==H^2) & signum (H-eps<0) bugs",
+
+            SlideCodeCard(
+                badge: "Nov 2026 · VerifiedRefactor.lean · Lean 4.36, 0 Mathlib",
+                code: """
+                structure FastLC where
+                  terms : TermList          -- strictly descending, nonzero
+                  wf : TermList.WF terms    -- Prop: erased at runtime
+                @[csimp] theorem coeff_eq_coeffWF : @FastLC.coeff = @FastLC.coeffWF
+                """,
+                accent: theme.accentCobalt,
+                theme: theme,
                 compact: compact
             )
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func timelineCard(year: String, title: String, code: String, issue: String, compact: Bool) -> some View {
-        VStack(alignment: .leading, spacing: compact ? 6 : 10) {
-            Text(year)
-                .font(.system(size: compact ? 13 : 16, weight: .bold, design: .monospaced))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(theme.accentCobalt, in: Capsule())
-            Text(title)
-                .font(.system(size: compact ? 16 : 21, weight: .bold, design: .rounded))
-                .foregroundStyle(theme.primaryInk)
-            Text(code)
-                .font(.system(size: compact ? 12 : 15, weight: .medium, design: .monospaced))
-                .foregroundStyle(theme.accentCobalt)
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(theme.paperBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            Spacer(minLength: 2)
-            Text(issue)
-                .font(.system(size: compact ? 12.5 : 15, design: .rounded))
-                .foregroundStyle(theme.secondaryInk)
-                .lineLimit(3)
-        }
-        .padding(compact ? 10 : 14)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
-    }
-
+    // Slide 5: Concrete Speedup Bars + Real Equivalence Proof Code Card
     private func speedupBarsVisual(compact: Bool) -> some View {
         let rows: [(name: String, before: String, after: String, speedup: String, afterFrac: CGFloat)] = [
-            ("mul_dense 512", "112.6 ms", "0.38 ms", "296x (324x iso)", 0.025),
-            ("inv 40", "2.79 ms", "6.6 us", "425x (361x iso)", 0.020),
-            ("mul_sparse 64", "2.48 ms", "178 us", "13.9x", 0.072),
-            ("signum 128", "35.1 us", "0.06 us", "636x", 0.015),
+            ("mul_dense 512", "112.6 ms", "0.38 ms", "296× (324× iso)", 0.025),
+            ("inv 40", "2.79 ms", "6.6 µs", "425× (361× iso)", 0.020),
+            ("mul_sparse 64", "2.48 ms", "178 µs", "13.9×", 0.072),
+            ("signum 128", "35.1 µs", "0.06 µs", "636×", 0.015),
         ]
 
-        return VStack(spacing: compact ? 8 : 13) {
+        return VStack(spacing: compact ? 6 : 9) {
             ForEach(rows, id: \.name) { row in
-                HStack(spacing: 12) {
+                HStack(spacing: 10) {
                     Text(row.name)
-                        .font(.system(size: compact ? 13 : 17, weight: .bold, design: .monospaced))
+                        .font(.system(size: compact ? 11.5 : 15, weight: .bold, design: .monospaced))
                         .foregroundStyle(theme.primaryInk)
-                        .frame(width: compact ? 120 : 165, alignment: .leading)
+                        .frame(width: compact ? 102 : 145, alignment: .leading)
 
                     GeometryReader { g in
-                        VStack(alignment: .leading, spacing: 4) {
-                            // HashMap baseline bar
-                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        VStack(alignment: .leading, spacing: 3) {
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
                                 .fill(theme.secondaryInk.opacity(0.28))
-                                .frame(width: g.size.width * 0.92, height: compact ? 10 : 14)
-                            // Verified FastLC bar
-                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .frame(width: g.size.width * 0.92, height: compact ? 7 : 10)
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
                                 .fill(theme.accentCobalt)
-                                .frame(width: max(12, g.size.width * 0.92 * row.afterFrac), height: compact ? 10 : 14)
+                                .frame(width: max(10, g.size.width * 0.92 * row.afterFrac), height: compact ? 7 : 10)
                         }
                         .frame(maxHeight: .infinity, alignment: .center)
                     }
 
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text("\(row.before) -> \(row.after)")
-                            .font(.system(size: compact ? 12 : 16, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(theme.primaryInk)
-                        Text(row.speedup)
-                            .font(.system(size: compact ? 12 : 15, weight: .bold, design: .monospaced))
-                            .foregroundStyle(theme.accentCobalt)
-                    }
-                    .frame(width: compact ? 150 : 210, alignment: .trailing)
+                    Text("\(row.before) -> \(row.after)  \(row.speedup)")
+                        .font(.system(size: compact ? 10.5 : 14, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(theme.accentCobalt)
+                        .frame(width: compact ? 170 : 255, alignment: .trailing)
+                        .lineLimit(1)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, compact ? 6 : 9)
-                .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .padding(.horizontal, 10)
+                .padding(.vertical, compact ? 4 : 6)
+                .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             }
+
+            SlideCodeCard(
+                badge: "VerifiedRefactor.lean + Kronecker.lean · Closed-Loop Oracle",
+                code: """
+                theorem mul_eq_mulNaive (x y : FastLC) : x * y = mulNaive x y
+                theorem powFast_eq_powNaive (x : FastLC) (n : Nat) : powFast x n = powNaive x n
+                theorem newton_order_doubles ...  -- quadratic convergence of invNewton
+                """,
+                accent: theme.accentCobalt,
+                theme: theme,
+                compact: compact
+            )
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    // Slide 6: Architecture Split + Real grind / FloatLib Code Card
     private func grindAndFloatLibVisual(compact: Bool) -> some View {
-        HStack(spacing: compact ? 12 : 20) {
-            VStack(alignment: .leading, spacing: compact ? 8 : 12) {
-                Text("ZERO-MATHLIB CORE")
-                    .font(.system(size: compact ? 13 : 16, weight: .bold, design: .monospaced))
-                    .foregroundStyle(theme.accentCobalt)
-                Text("Lean 4.36 CommRing & OrderedRing")
-                    .font(.system(size: compact ? 17 : 23, weight: .bold, design: .rounded))
-                    .foregroundStyle(theme.primaryInk)
-                Text("Truthfully not Field (finite support Q[H^Q]).\n23 GrindShowcase theorems / 32 by grind proofs.\n54/54 core jobs, zero warnings.")
-                    .font(.system(size: compact ? 13.5 : 17, design: .rounded))
-                    .foregroundStyle(theme.secondaryInk)
-                    .lineSpacing(3)
-                Spacer(minLength: 0)
-            }
-            .padding(compact ? 12 : 18)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(theme.accentCobalt.opacity(0.35), lineWidth: 1.5))
+        VStack(spacing: compact ? 8 : 11) {
+            HStack(spacing: compact ? 10 : 16) {
+                VStack(alignment: .leading, spacing: compact ? 4 : 7) {
+                    Text("ZERO-MATHLIB CORE")
+                        .font(.system(size: compact ? 11.5 : 14, weight: .bold, design: .monospaced))
+                        .foregroundStyle(theme.accentCobalt)
+                    Text("Lean 4.36 CommRing & OrderedRing")
+                        .font(.system(size: compact ? 14 : 19, weight: .bold, design: .rounded))
+                        .foregroundStyle(theme.primaryInk)
+                    Text("23 GrindShowcase thms / 32 by grind · 54/54 jobs, 0 warnings")
+                        .font(.system(size: compact ? 11.5 : 14.5, design: .rounded))
+                        .foregroundStyle(theme.secondaryInk)
+                }
+                .padding(compact ? 9 : 13)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(theme.accentCobalt.opacity(0.32), lineWidth: 1.2))
 
-            VStack(alignment: .leading, spacing: compact ? 8 : 12) {
-                Text("NESTED float-proofs/ (FloatLib)")
-                    .font(.system(size: compact ? 13 : 16, weight: .bold, design: .monospaced))
-                    .foregroundStyle(theme.successGreen)
-                Text("24 Zero-Sorry IEEE-754 Theorems")
-                    .font(.system(size: compact ? 17 : 23, weight: .bold, design: .rounded))
-                    .foregroundStyle(theme.primaryInk)
-                Text("Binary64 Sum2 certifies 24.99979 < v < 24.99980 on 3-term dstep(0) at N=100.\nUnconditional < 4 u64 sigmoidB64.\nN = 2^60: FastLC 2 vs naive Float 0 vs Sum2 2.")
-                    .font(.system(size: compact ? 13.5 : 17, design: .rounded))
-                    .foregroundStyle(theme.secondaryInk)
-                    .lineSpacing(3)
-                Spacer(minLength: 0)
+                VStack(alignment: .leading, spacing: compact ? 4 : 7) {
+                    Text("NESTED float-proofs/ (FloatLib)")
+                        .font(.system(size: compact ? 11.5 : 14, weight: .bold, design: .monospaced))
+                        .foregroundStyle(theme.successGreen)
+                    Text("24 Zero-Sorry IEEE-754 Theorems")
+                        .font(.system(size: compact ? 14 : 19, weight: .bold, design: .rounded))
+                        .foregroundStyle(theme.primaryInk)
+                    Text("Binary64 Sum2, < 4 u64 sigmoidB64, N = 2⁶⁰ cancellation")
+                        .font(.system(size: compact ? 11.5 : 14.5, design: .rounded))
+                        .foregroundStyle(theme.secondaryInk)
+                }
+                .padding(compact ? 9 : 13)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(theme.successGreen.opacity(0.32), lineWidth: 1.2))
             }
-            .padding(compact ? 12 : 18)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(theme.successGreen.opacity(0.35), lineWidth: 1.5))
+
+            SlideCodeCard(
+                badge: "Grind.lean + float-proofs/DiracBridge.lean",
+                code: """
+                instance : Lean.Grind.OrderedRing FastLC  -- 0 Mathlib
+                theorem grind_H_mul_eps_add_one : infH * infEps + 1 = 2 := by grind
+                theorem diracCenter_at_100_certified :
+                  24.99979 < (evalFiniteSum2 diracCenterLC b100).toReal ∧ ...
+                """,
+                accent: theme.successGreen,
+                theme: theme,
+                compact: compact
+            )
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func verificationPillarsVisual(compact: Bool) -> some View {
-        HStack(spacing: compact ? 10 : 16) {
+        HStack(spacing: compact ? 8 : 14) {
             pillarCard(
                 badge: "KERNEL",
-                headline: "167 / 167",
+                headline: "167+ tests",
                 body: "0 sorry, 0 @[extern], 0 native_decide.\nStandard 3 axioms only.\nTCB outside kernel: compiler, GMP, parser, Float.",
                 color: theme.accentCobalt,
                 compact: compact
@@ -1069,8 +1214,8 @@ struct SlideAudienceView: View {
             )
             pillarCard(
                 badge: "58-CASE 8-AXIS",
-                headline: "17.57x",
-                body: "1,508.5 -> 85.8 us geomean, 0 regressions, Peak RSS 45 MB.\nCaught Axis-3 den != 1 (1,249 -> 106 us) + GMP 2^31-1 cliff.",
+                headline: "17.57×",
+                body: "1,508.5 -> 85.8 µs geomean, 0 regressions, Peak RSS 45 MB.\nCaught Axis-3 den != 1 (1,249 -> 106 µs) + GMP 2³¹-1 cliff.",
                 color: Color(red: 0.604, green: 0.204, blue: 0.071),
                 compact: compact
             )
@@ -1078,69 +1223,69 @@ struct SlideAudienceView: View {
     }
 
     private func pillarCard(badge: String, headline: String, body: String, color: Color, compact: Bool) -> some View {
-        VStack(alignment: .leading, spacing: compact ? 6 : 10) {
+        VStack(alignment: .leading, spacing: compact ? 5 : 9) {
             Text(badge)
-                .font(.system(size: compact ? 12 : 14, weight: .bold, design: .monospaced))
+                .font(.system(size: compact ? 11 : 13, weight: .bold, design: .monospaced))
                 .foregroundStyle(color)
-                .padding(.horizontal, 9)
+                .padding(.horizontal, 8)
                 .padding(.vertical, 3)
                 .background(color.opacity(0.14), in: Capsule())
             Text(headline)
-                .font(.system(size: compact ? 24 : 34, weight: .bold, design: .monospaced))
+                .font(.system(size: compact ? 20 : 32, weight: .bold, design: .monospaced))
                 .foregroundStyle(theme.primaryInk)
             Text(body)
-                .font(.system(size: compact ? 12.5 : 15.5, design: .rounded))
+                .font(.system(size: compact ? 11.5 : 15, design: .rounded))
                 .foregroundStyle(theme.secondaryInk)
                 .lineSpacing(2)
             Spacer(minLength: 0)
         }
-        .padding(compact ? 10 : 14)
+        .padding(compact ? 9 : 13)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(color.opacity(0.32), lineWidth: 1.5))
+        .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(color.opacity(0.32), lineWidth: 1.4))
     }
 
     private func liveDemoLauncherVisual(compact: Bool) -> some View {
         let cols = [
-            GridItem(.flexible(), spacing: compact ? 10 : 16),
-            GridItem(.flexible(), spacing: compact ? 10 : 16),
-            GridItem(.flexible(), spacing: compact ? 10 : 16),
+            GridItem(.flexible(), spacing: compact ? 8 : 14),
+            GridItem(.flexible(), spacing: compact ? 8 : 14),
+            GridItem(.flexible(), spacing: compact ? 8 : 14),
         ]
-        return LazyVGrid(columns: cols, spacing: compact ? 10 : 16) {
+        return LazyVGrid(columns: cols, spacing: compact ? 8 : 14) {
             ForEach(slide.demoActions) { action in
                 Button {
                     guard interactiveDemoButtons else { return }
                     store.jumpToCalculator(expr: action.expr, clearCanvasForDrawing: action.clearForPencil)
                 } label: {
-                    VStack(alignment: .leading, spacing: compact ? 5 : 8) {
+                    VStack(alignment: .leading, spacing: compact ? 4 : 7) {
                         HStack {
                             Image(systemName: action.clearForPencil ? "pencil.and.scribble" : "bolt.fill")
-                                .font(.system(size: compact ? 16 : 22, weight: .bold))
+                                .font(.system(size: compact ? 14 : 20, weight: .bold))
                                 .foregroundStyle(action.clearForPencil ? .white : theme.accentCobalt)
                             Spacer()
                             Image(systemName: "arrow.up.right")
-                                .font(.system(size: 14, weight: .bold))
+                                .font(.system(size: 13, weight: .bold))
                                 .foregroundStyle(action.clearForPencil ? .white.opacity(0.85) : theme.secondaryInk)
                         }
                         Text(action.title)
-                            .font(.system(size: compact ? 15 : 21, weight: .bold, design: .monospaced))
+                            .font(.system(size: compact ? 13.5 : 19, weight: .bold, design: .monospaced))
                             .foregroundStyle(action.clearForPencil ? .white : theme.primaryInk)
                             .lineLimit(1)
-                            .minimumScaleFactor(0.75)
+                            .minimumScaleFactor(0.72)
                         Text(action.subtitle)
-                            .font(.system(size: compact ? 12.5 : 15, design: .rounded))
+                            .font(.system(size: compact ? 11 : 14, design: .rounded))
                             .foregroundStyle(action.clearForPencil ? .white.opacity(0.9) : theme.secondaryInk)
                             .lineLimit(2)
                     }
-                    .frame(maxWidth: .infinity, minHeight: compact ? 86 : 118, alignment: .topLeading)
-                    .padding(compact ? 12 : 16)
+                    .frame(maxWidth: .infinity, minHeight: compact ? 74 : 110, alignment: .topLeading)
+                    .padding(compact ? 10 : 14)
                     .background(
                         action.clearForPencil ? theme.accentCobalt : theme.surfaceCard,
-                        in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        in: RoundedRectangle(cornerRadius: 14, style: .continuous)
                     )
                     .overlay(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .stroke(action.clearForPencil ? theme.accentCobalt : theme.borderSubtle, lineWidth: 1.5)
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(action.clearForPencil ? theme.accentCobalt : theme.borderSubtle, lineWidth: 1.4)
                     )
                 }
                 .buttonStyle(.plain)

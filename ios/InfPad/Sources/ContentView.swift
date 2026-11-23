@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ContentView: View {
     @Bindable var store: InfPadStore
+    @ObservedObject private var externalDisplay = ExternalDisplayManager.shared
     @FocusState private var isExprFocused: Bool
     @State private var copiedFeedback = false
     @State private var hoveredChip: StarterChip? = nil
@@ -19,28 +20,36 @@ struct ContentView: View {
                     topChromeBar
                 }
 
-                if store.activeTab == .slides {
+                switch store.activeTab {
+                case .calculator:
+                    calculatorBody(compactSplit: false)
+                case .split:
+                    splitModeBody
+                case .slides:
                     SlidesView(store: store)
-                } else {
-                    calculatorBody
                 }
             }
 
-            // Hidden keyboard shortcuts for iPad hardware keyboard / AirPlay presenting
+            // Hidden keyboard shortcuts for iPad hardware keyboard / external display presenting
             VStack {
                 Button("") { store.activeTab = .calculator }
                     .keyboardShortcut("1", modifiers: .command)
-                Button("") { store.activeTab = .slides }
+                Button("") { store.activeTab = .split }
                     .keyboardShortcut("2", modifiers: .command)
-                if store.activeTab == .slides {
+                Button("") { store.activeTab = .slides }
+                    .keyboardShortcut("3", modifiers: .command)
+                if store.activeTab == .slides || store.activeTab == .split {
                     Button("") { store.prevSlide() }
                         .keyboardShortcut(.leftArrow, modifiers: [])
                     Button("") { store.nextSlide() }
                         .keyboardShortcut(.rightArrow, modifiers: [])
                     Button("") { store.nextSlide() }
                         .keyboardShortcut(.space, modifiers: [])
-                    Button("") { store.isAirPlayClean.toggle() }
-                        .keyboardShortcut("f", modifiers: [])
+                    Button("") {
+                        store.activeTab = .slides
+                        store.isAirPlayClean.toggle()
+                    }
+                    .keyboardShortcut("f", modifiers: [])
                 }
             }
             .frame(width: 0, height: 0)
@@ -56,10 +65,36 @@ struct ContentView: View {
         }
     }
 
-    private var calculatorBody: some View {
+    // MARK: - Side-by-Side Split Mode (`Slides` 46% | `Calculator` 54%)
+
+    private var splitModeBody: some View {
         GeometryReader { geo in
-            let isLandscape = geo.size.width >= geo.size.height
-            if isLandscape {
+            if geo.size.width >= geo.size.height {
+                HStack(spacing: 14) {
+                    SplitSlidePane(store: store)
+                        .frame(width: geo.size.width * 0.46)
+                    calculatorBody(compactSplit: true)
+                        .frame(maxWidth: .infinity)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+            } else {
+                VStack(spacing: 12) {
+                    SplitSlidePane(store: store)
+                        .frame(height: geo.size.height * 0.44)
+                    calculatorBody(compactSplit: true)
+                        .frame(maxHeight: .infinity)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+            }
+        }
+    }
+
+    private func calculatorBody(compactSplit: Bool) -> some View {
+        GeometryReader { geo in
+            let sideBySide = !compactSplit && (geo.size.width >= geo.size.height)
+            if sideBySide {
                 HStack(spacing: 16) {
                     leftCanvasPane
                         .frame(width: geo.size.width * 0.54)
@@ -71,12 +106,12 @@ struct ContentView: View {
             } else {
                 VStack(spacing: 12) {
                     leftCanvasPane
-                        .frame(height: geo.size.height * 0.36)
+                        .frame(height: geo.size.height * (compactSplit ? 0.34 : 0.36))
                     rightInspectorPane
                         .frame(maxHeight: .infinity)
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                .padding(.horizontal, compactSplit ? 2 : 16)
+                .padding(.vertical, compactSplit ? 0 : 12)
             }
         }
     }
@@ -84,27 +119,27 @@ struct ContentView: View {
     // MARK: - Top Header Chrome
 
     private var topChromeBar: some View {
-        HStack(spacing: 14) {
-            HStack(spacing: 10) {
+        HStack(spacing: 12) {
+            HStack(spacing: 9) {
                 Image(systemName: "infinity.circle.fill")
-                    .font(.system(size: 28, weight: .semibold))
+                    .font(.system(size: 27, weight: .semibold))
                     .foregroundStyle(theme.accentCobalt)
                 Text("InfPad")
-                    .font(.system(size: 25, weight: .bold, design: .rounded))
+                    .font(.system(size: 24, weight: .bold, design: .rounded))
                     .foregroundStyle(theme.primaryInk)
 
                 if store.activeTab == .calculator && store.returnedFromSlides {
                     Button {
                         store.returnToSlides()
                     } label: {
-                        HStack(spacing: 5) {
+                        HStack(spacing: 4) {
                             Image(systemName: "chevron.left")
-                                .font(.system(size: 14, weight: .bold))
+                                .font(.system(size: 13, weight: .bold))
                             Text("Slides")
-                                .font(.system(size: 16, weight: .bold, design: .rounded))
+                                .font(.system(size: 15, weight: .bold, design: .rounded))
                         }
                         .foregroundStyle(.white)
-                        .padding(.horizontal, 12)
+                        .padding(.horizontal, 11)
                         .padding(.vertical, 6)
                         .background(theme.accentCobalt, in: Capsule())
                     }
@@ -112,88 +147,120 @@ struct ContentView: View {
                 }
             }
 
-            // Clean Calculator | Slides mode switcher
+            // 3-Mode Switcher: Calculator | Split | Slides
             HStack(spacing: 3) {
                 ForEach(InfPadTab.allCases) { tab in
                     let active = store.activeTab == tab
+                    let icon: String = {
+                        switch tab {
+                        case .calculator: return "function"
+                        case .split: return "rectangle.split.2x1"
+                        case .slides: return "play.rectangle.on.rectangle"
+                        }
+                    }()
                     Button {
                         store.activeTab = tab
                     } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: tab == .calculator ? "function" : "play.rectangle.on.rectangle")
-                                .font(.system(size: 15, weight: .bold))
+                        HStack(spacing: 5) {
+                            Image(systemName: icon)
+                                .font(.system(size: 14, weight: .bold))
                             Text(tab.rawValue)
-                                .font(.system(size: 17, weight: .bold, design: .rounded))
+                                .font(.system(size: 16, weight: .bold, design: .rounded))
                         }
                         .foregroundStyle(active ? .white : theme.primaryInk)
-                        .padding(.horizontal, 14)
+                        .padding(.horizontal, 12)
                         .padding(.vertical, 7)
-                        .background(active ? theme.accentCobalt : Color.clear, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .background(active ? theme.accentCobalt : Color.clear, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                     }
                     .buttonStyle(.plain)
                 }
             }
             .padding(3)
-            .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
+            .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
+
+            // Smart External Display Controls (HDMI / AirPlay Extended vs Screen Mirroring)
+            if externalDisplay.isExternalDisplayConnected {
+                HStack(spacing: 3) {
+                    Text("TV:")
+                        .font(.system(size: 13, weight: .bold, design: .monospaced))
+                        .foregroundStyle(theme.successGreen)
+                        .padding(.leading, 8)
+                    ForEach(ExternalOutputMode.allCases) { mode in
+                        let active = store.externalOutputMode == mode
+                        Button {
+                            store.externalOutputMode = mode
+                        } label: {
+                            Text(mode.rawValue)
+                                .font(.system(size: 14, weight: .bold, design: .rounded))
+                                .foregroundStyle(active ? .white : theme.primaryInk)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(active ? theme.successGreen : Color.clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(3)
+                .background(theme.successGreen.opacity(0.12), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(theme.successGreen.opacity(0.35), lineWidth: 1))
+            }
 
             Spacer()
 
-            // Live health status pill
+            // Live Lean 4 health pill
             Button {
                 Task { await store.checkHealth() }
             } label: {
-                HStack(spacing: 8) {
+                HStack(spacing: 7) {
                     Circle()
                         .fill(store.isConnected ? theme.successGreen : theme.errorRed)
-                        .frame(width: 11, height: 11)
+                        .frame(width: 10, height: 10)
                     if let h = store.health, h.ok {
                         Text("Lean \(h.lean ?? "4.36") · \(String(format: "%.1f", h.pingMs ?? 0)) ms")
-                            .font(.system(size: 17, weight: .medium, design: .monospaced))
+                            .font(.system(size: 16, weight: .medium, design: .monospaced))
                             .foregroundStyle(theme.primaryInk)
                     } else {
-                        Text(store.isCheckingHealth ? "Connecting…" : "Offline · Tap to Retry")
-                            .font(.system(size: 17, weight: .medium, design: .rounded))
+                        Text(store.isCheckingHealth ? "Connecting…" : "Offline · Retry")
+                            .font(.system(size: 16, weight: .medium, design: .rounded))
                             .foregroundStyle(theme.errorRed)
                     }
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 9)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
                 .background(theme.surfaceCard, in: Capsule())
                 .overlay(Capsule().stroke(theme.borderSubtle, lineWidth: 1))
             }
             .buttonStyle(.plain)
 
-            // Warm Paper / Soft Slate toggle
             Button {
                 store.isDark.toggle()
             } label: {
                 Image(systemName: store.isDark ? "sun.max.fill" : "moon.fill")
-                    .font(.system(size: 20, weight: .semibold))
+                    .font(.system(size: 19, weight: .semibold))
                     .foregroundStyle(theme.primaryInk)
-                    .frame(width: 44, height: 44)
+                    .frame(width: 42, height: 42)
                     .background(theme.surfaceCard, in: Circle())
                     .overlay(Circle().stroke(theme.borderSubtle, lineWidth: 1))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Toggle Paper Theme")
 
-            // Settings gear
             Button {
                 store.showSettings = true
             } label: {
                 Image(systemName: "gearshape.fill")
-                    .font(.system(size: 20, weight: .semibold))
+                    .font(.system(size: 19, weight: .semibold))
                     .foregroundStyle(theme.primaryInk)
-                    .frame(width: 44, height: 44)
+                    .frame(width: 42, height: 42)
                     .background(theme.surfaceCard, in: Circle())
                     .overlay(Circle().stroke(theme.borderSubtle, lineWidth: 1))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Settings")
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
         .background(theme.paperBackground)
         .overlay(alignment: .bottom) {
             Rectangle().fill(theme.borderSubtle).frame(height: 1)
@@ -203,29 +270,19 @@ struct ContentView: View {
     // MARK: - Left Pane: PencilKit Canvas + Toolbar + Starter Chips
 
     private var leftCanvasPane: some View {
-        VStack(spacing: 12) {
-            // Drawing toolbar
-            HStack(spacing: 10) {
-                // Pencil / Eraser toggle
+        VStack(spacing: 10) {
+            HStack(spacing: 8) {
                 HStack(spacing: 4) {
-                    toolButton(
-                        title: "Pencil",
-                        icon: "pencil.tip",
-                        active: store.toolMode == .pen
-                    ) {
+                    toolButton(title: "Pencil", icon: "pencil.tip", active: store.toolMode == .pen) {
                         store.toolMode = .pen
                     }
-                    toolButton(
-                        title: "Eraser",
-                        icon: "eraser.fill",
-                        active: store.toolMode == .eraser
-                    ) {
+                    toolButton(title: "Eraser", icon: "eraser.fill", active: store.toolMode == .eraser) {
                         store.toolMode = .eraser
                     }
                 }
                 .padding(4)
-                .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
+                .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
 
                 iconActionButton(icon: "arrow.uturn.backward", label: "Undo", disabled: !store.canUndo) {
                     store.undo()
@@ -239,28 +296,25 @@ struct ContentView: View {
 
                 Spacer()
 
-                // Primary Evaluate Ink CTA
                 Button {
                     isExprFocused = false
                     Task { await store.evaluateInk() }
                 } label: {
-                    HStack(spacing: 10) {
+                    HStack(spacing: 8) {
                         if store.isOcrRunning {
-                            ProgressView()
-                                .tint(.white)
-                                .scaleEffect(1.0)
+                            ProgressView().tint(.white)
                         } else {
                             Image(systemName: "sparkles")
-                                .font(.system(size: 20, weight: .semibold))
+                                .font(.system(size: 18, weight: .semibold))
                         }
                         Text(store.isOcrRunning ? "Reading Ink…" : "Evaluate Ink")
-                            .font(.system(size: 20, weight: .bold, design: .rounded))
+                            .font(.system(size: 18, weight: .bold, design: .rounded))
                     }
                     .foregroundStyle(.white)
-                    .padding(.horizontal, 22)
-                    .frame(height: 52)
-                    .background(theme.accentCobalt, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .shadow(color: theme.accentCobalt.opacity(0.24), radius: 8, y: 3)
+                    .padding(.horizontal, 18)
+                    .frame(height: 48)
+                    .background(theme.accentCobalt, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                    .shadow(color: theme.accentCobalt.opacity(0.22), radius: 7, y: 3)
                 }
                 .buttonStyle(.plain)
                 .disabled(store.isOcrRunning)
@@ -268,30 +322,30 @@ struct ContentView: View {
 
             // PencilKit Canvas Card
             ZStack {
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .fill(theme.elevatedCard)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
                             .stroke(theme.borderSubtle, lineWidth: 1.5)
                     )
 
                 PaperDotGrid(dotColor: theme.canvasDotColor)
-                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
 
                 if store.drawing.strokes.isEmpty {
-                    VStack(spacing: 10) {
+                    VStack(spacing: 8) {
                         Image(systemName: "pencil.and.scribble")
-                            .font(.system(size: 40, weight: .light))
+                            .font(.system(size: 36, weight: .light))
                             .foregroundStyle(theme.secondaryInk.opacity(0.45))
-                        Text("Write an infinitesimal expression with Apple Pencil or finger")
-                            .font(.system(size: 20, weight: .medium, design: .rounded))
-                            .foregroundStyle(theme.secondaryInk.opacity(0.65))
+                        Text("Write any Levi-Civita expression with Apple Pencil or finger")
+                            .font(.system(size: 18, weight: .medium, design: .rounded))
+                            .foregroundStyle(theme.secondaryInk.opacity(0.68))
                             .multilineTextAlignment(.center)
-                        Text("Examples: 1/(1+exp(-Hx)) · dstep(x) · (1 + ε)³ · diff(x⁴, x, 2)")
-                            .font(.system(size: 18, design: .monospaced))
+                        Text("Examples: H² · (1 + ε)⁻¹ · dstep(0) · 1/x · x² + y²")
+                            .font(.system(size: 16, design: .monospaced))
                             .foregroundStyle(theme.secondaryInk.opacity(0.55))
                     }
-                    .padding(24)
+                    .padding(20)
                     .allowsHitTesting(false)
                 }
 
@@ -302,21 +356,21 @@ struct ContentView: View {
                     controller: store.canvasController,
                     onDrawingChanged: { store.syncUndoState() }
                 )
-                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            // 1-Tap Starter Chips Row (with Apple Pencil / pointer hover explanation + (?) finger legend)
+            // 1-Tap Starter Chips Row with Apple Pencil / pointer hover explanations + (?) legend popover
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
                     Text("1-TAP STARTERS")
-                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .font(.system(size: 13, weight: .bold, design: .rounded))
                         .tracking(1.0)
                         .foregroundStyle(theme.secondaryInk)
 
                     if let activeHint = (hoveredChip ?? InfPadPresets.starterChips.first(where: { $0.expr == store.expressionText }))?.hint {
                         Text("·  \(activeHint)")
-                            .font(.system(size: 14, weight: .medium, design: .rounded))
+                            .font(.system(size: 13.5, weight: .medium, design: .rounded))
                             .foregroundStyle(hoveredChip != nil ? theme.accentCobalt : theme.secondaryInk)
                             .lineLimit(1)
                             .truncationMode(.tail)
@@ -339,7 +393,7 @@ struct ContentView: View {
                 }
 
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 10) {
+                    HStack(spacing: 9) {
                         ForEach(InfPadPresets.starterChips) { chip in
                             let isSelected = store.expressionText == chip.expr
                             let isHovered = hoveredChip?.id == chip.id
@@ -348,16 +402,16 @@ struct ContentView: View {
                                 Task { await store.selectStarterChip(chip) }
                             } label: {
                                 Text(chip.label)
-                                    .font(.system(size: 19, weight: .semibold, design: .monospaced))
+                                    .font(.system(size: 17, weight: .semibold, design: .monospaced))
                                     .foregroundStyle(theme.primaryInk)
-                                    .padding(.horizontal, 16)
-                                    .padding(.vertical, 11)
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 9)
                                     .background(
                                         isHovered ? theme.accentCobalt.opacity(0.10) : theme.surfaceCard,
-                                        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        in: RoundedRectangle(cornerRadius: 11, style: .continuous)
                                     )
                                     .overlay(
-                                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        RoundedRectangle(cornerRadius: 11, style: .continuous)
                                             .stroke(
                                                 (isSelected || isHovered) ? theme.accentCobalt : theme.borderSubtle,
                                                 lineWidth: (isSelected || isHovered) ? 2 : 1
@@ -381,39 +435,49 @@ struct ContentView: View {
     }
 
     private var starterLegendPopover: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Starter Expressions")
-                .font(.system(size: 20, weight: .bold, design: .rounded))
-                .foregroundStyle(theme.primaryInk)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Starter Expressions")
+                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                    .foregroundStyle(theme.primaryInk)
 
-            ForEach(InfPadPresets.starterChips) { chip in
-                Button {
-                    showStarterLegend = false
-                    isExprFocused = false
-                    Task { await store.selectStarterChip(chip) }
-                } label: {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(chip.label)
-                            .font(.system(size: 17, weight: .bold, design: .monospaced))
-                            .foregroundStyle(theme.accentCobalt)
-                        Text(chip.hint)
-                            .font(.system(size: 15, design: .rounded))
-                            .foregroundStyle(theme.primaryInk)
-                            .fixedSize(horizontal: false, vertical: true)
+                ForEach(InfPadPresets.starterChips) { chip in
+                    Button {
+                        showStarterLegend = false
+                        isExprFocused = false
+                        Task { await store.selectStarterChip(chip) }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                Text(chip.label)
+                                    .font(.system(size: 16, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(theme.accentCobalt)
+                                Spacer()
+                                if chip.label != chip.expr {
+                                    Text(chip.expr)
+                                        .font(.system(size: 13, design: .monospaced))
+                                        .foregroundStyle(theme.secondaryInk)
+                                }
+                            }
+                            Text(chip.hint)
+                                .font(.system(size: 14.5, design: .rounded))
+                                .foregroundStyle(theme.primaryInk)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                        .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(10)
-                    .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
+            .padding(18)
         }
-        .padding(18)
-        .frame(width: 480)
+        .frame(width: 500, height: 520)
         .background(theme.paperBackground)
     }
 
-    // MARK: - Right Pane: Recognized Expr + Lean 4 FastLC Result + H ↦ N Slider + History
+    // MARK: - Right Pane: Generic Expression Editor + Lean 4 Result / Plot / Heatmap + H ↦ N Slider + History
 
     private var rightInspectorPane: some View {
         ScrollView(.vertical, showsIndicators: true) {
@@ -424,19 +488,49 @@ struct ContentView: View {
                     errorBanner(err)
                 }
 
-                if let ev = store.evalResult, ev.ok, let plot = ev.plot, ev.isFunction {
-                    FunctionPlotCard(
-                        eval: ev,
-                        plot: plot,
-                        theme: theme,
-                        currentN: Int(store.sliderN.rounded()),
-                        latencyText: (store.ocrMs != nil || store.leanMs != nil) ? latencyBadgeText : nil
-                    )
+                if let ev = store.evalResult, ev.ok {
+                    if ev.isFunction, let plot = ev.plot {
+                        FunctionPlotCard(
+                            eval: ev,
+                            plot: plot,
+                            theme: theme,
+                            currentN: Int(store.sliderN.rounded()),
+                            latencyText: (store.ocrMs != nil || store.leanMs != nil) ? latencyBadgeText : nil
+                        )
+                    } else if ev.isHeatmap {
+                        HeatmapPlotCard(
+                            eval: ev,
+                            theme: theme,
+                            currentN: Int(store.sliderN.rounded()),
+                            latencyText: (store.ocrMs != nil || store.leanMs != nil) ? latencyBadgeText : nil
+                        )
+                    } else {
+                        resultCard
+
+                        if ev.isFiniteProjectionPlot, let plot = ev.plot {
+                            ConstantScalePlotCard(
+                                eval: ev,
+                                plot: plot,
+                                theme: theme,
+                                currentN: Int(store.sliderN.rounded())
+                            )
+                        } else if ev.isSkippedNonFinitePlot, let reason = ev.plot_reason {
+                            HStack(spacing: 8) {
+                                Image(systemName: "info.circle")
+                                    .foregroundStyle(theme.secondaryInk)
+                                Text("Plot skipped: \(reason)")
+                                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                                    .foregroundStyle(theme.secondaryInk)
+                                Spacer()
+                            }
+                            .padding(12)
+                            .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        }
+                    }
 
                     finiteSliderCard
                 } else {
                     resultCard
-
                     finiteSliderCard
                 }
 
@@ -450,7 +544,7 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("EXPRESSION")
-                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .font(.system(size: 14, weight: .bold, design: .rounded))
                     .tracking(1.0)
                     .foregroundStyle(theme.secondaryInk)
 
@@ -458,15 +552,15 @@ struct ContentView: View {
 
                 if let rec = store.recognizedExpr, !rec.isEmpty {
                     Text("OCR: \(rec)")
-                        .font(.system(size: 15, weight: .medium, design: .monospaced))
+                        .font(.system(size: 14, weight: .medium, design: .monospaced))
                         .foregroundStyle(theme.accentCobalt)
                         .lineLimit(1)
                 }
             }
 
             HStack(spacing: 10) {
-                TextField("e.g. dstep(0) or (1 + eps)^(-1)", text: $store.expressionText)
-                    .font(.system(size: 24, weight: .semibold, design: .monospaced))
+                TextField("Type or draw any Levi-Civita expression…", text: $store.expressionText)
+                    .font(.system(size: 22, weight: .semibold, design: .monospaced))
                     .foregroundStyle(theme.primaryInk)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -476,7 +570,7 @@ struct ContentView: View {
                         Task { await store.evaluateExpression() }
                     }
                     .padding(.horizontal, 14)
-                    .frame(height: 54)
+                    .frame(height: 52)
                     .background(theme.elevatedCard, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .overlay(
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -492,73 +586,72 @@ struct ContentView: View {
                             ProgressView().tint(.white)
                         } else {
                             Image(systemName: "play.fill")
-                                .font(.system(size: 17, weight: .bold))
+                                .font(.system(size: 16, weight: .bold))
                         }
-                        Text("Re-Eval")
-                            .font(.system(size: 19, weight: .bold, design: .rounded))
+                        Text("Eval")
+                            .font(.system(size: 18, weight: .bold, design: .rounded))
                     }
                     .foregroundStyle(.white)
-                    .padding(.horizontal, 18)
-                    .frame(height: 54)
+                    .padding(.horizontal, 16)
+                    .frame(height: 52)
                     .background(theme.accentCobalt, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .disabled(store.isEvaluating)
             }
 
-            // Quick math symbol rail for rapid expression tweaking
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
+                HStack(spacing: 7) {
                     ForEach(InfPadPresets.quickSymbols, id: \.self) { sym in
                         Button {
                             store.insertSymbol(sym)
                         } label: {
                             Text(sym)
-                                .font(.system(size: 18, weight: .medium, design: .monospaced))
+                                .font(.system(size: 17, weight: .medium, design: .monospaced))
                                 .foregroundStyle(theme.primaryInk)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 7)
-                                .background(theme.elevatedCard, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                                .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
+                                .padding(.horizontal, 11)
+                                .padding(.vertical, 6)
+                                .background(theme.elevatedCard, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
                         }
                         .buttonStyle(.plain)
                     }
                 }
             }
         }
-        .padding(16)
-        .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
+        .padding(14)
+        .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
     }
 
     private func errorBanner(_ message: String) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 20))
+                .font(.system(size: 19))
                 .foregroundStyle(theme.errorRed)
             Text(message)
-                .font(.system(size: 18, weight: .medium, design: .rounded))
+                .font(.system(size: 16.5, weight: .medium, design: .rounded))
                 .foregroundStyle(theme.errorRed)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer()
         }
-        .padding(14)
-        .background(theme.errorRed.opacity(0.10), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(theme.errorRed.opacity(0.3), lineWidth: 1))
+        .padding(13)
+        .background(theme.errorRed.opacity(0.10), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).stroke(theme.errorRed.opacity(0.3), lineWidth: 1))
     }
 
     private var resultCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
                 Text("EXACT LEAN 4 FastLC")
-                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .font(.system(size: 14, weight: .bold, design: .rounded))
                     .tracking(1.0)
                     .foregroundStyle(theme.secondaryInk)
 
                 if let ev = store.evalResult, ev.ok {
                     let style = theme.regimeStyle(ev.regime)
                     Text(style.label)
-                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
                         .foregroundStyle(style.fg)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 4)
@@ -567,10 +660,9 @@ struct ContentView: View {
 
                 Spacer()
 
-                // Latency badge
                 if store.ocrMs != nil || store.leanMs != nil {
                     Text(latencyBadgeText)
-                        .font(.system(size: 16, weight: .semibold, design: .monospaced))
+                        .font(.system(size: 15, weight: .semibold, design: .monospaced))
                         .foregroundStyle(theme.secondaryInk)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 4)
@@ -585,16 +677,15 @@ struct ContentView: View {
                 let shownText = (store.expandExactTail || preview.tailCount == 0) ? rawDisplay : "\(preview.head) …"
 
                 Text(shownText)
-                    .font(.system(size: 30, weight: .semibold, design: .monospaced))
+                    .font(.system(size: 28, weight: .semibold, design: .monospaced))
                     .foregroundStyle(theme.primaryInk)
                     .lineSpacing(6)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(16)
-                    .background(theme.elevatedCard, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
+                    .padding(14)
+                    .background(theme.elevatedCard, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
 
-                // Expand/collapse long rational tail + Exact/Approx + Copy controls
                 HStack(spacing: 10) {
                     if preview.tailCount > 0 && !store.showApprox {
                         Button {
@@ -602,14 +693,14 @@ struct ContentView: View {
                                 store.expandExactTail.toggle()
                             }
                         } label: {
-                            HStack(spacing: 6) {
+                            HStack(spacing: 5) {
                                 Image(systemName: store.expandExactTail ? "chevron.up" : "chevron.down")
                                 Text(store.expandExactTail ? "Hide rational tail" : "Show +\(preview.tailCount) exact terms")
                             }
-                            .font(.system(size: 17, weight: .semibold, design: .rounded))
+                            .font(.system(size: 16, weight: .semibold, design: .rounded))
                             .foregroundStyle(theme.accentCobalt)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
                             .background(theme.accentCobalt.opacity(0.12), in: Capsule())
                         }
                         .buttonStyle(.plain)
@@ -620,11 +711,11 @@ struct ContentView: View {
                     Button {
                         store.showApprox.toggle()
                     } label: {
-                        Text(store.showApprox ? "Show Exact Q" : "Decimal")
-                            .font(.system(size: 17, weight: .semibold, design: .rounded))
+                        Text(store.showApprox ? "Show Exact ℚ" : "Decimal")
+                            .font(.system(size: 16, weight: .semibold, design: .rounded))
                             .foregroundStyle(theme.primaryInk)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
+                            .padding(.horizontal, 13)
+                            .padding(.vertical, 7)
                             .background(theme.elevatedCard, in: Capsule())
                             .overlay(Capsule().stroke(theme.borderSubtle, lineWidth: 1))
                     }
@@ -638,36 +729,35 @@ struct ContentView: View {
                         }
                     } label: {
                         Label(copiedFeedback ? "Copied" : "Copy", systemImage: copiedFeedback ? "checkmark" : "doc.on.doc")
-                            .font(.system(size: 17, weight: .semibold, design: .rounded))
+                            .font(.system(size: 16, weight: .semibold, design: .rounded))
                             .foregroundStyle(theme.primaryInk)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
+                            .padding(.horizontal, 13)
+                            .padding(.vertical, 7)
                             .background(theme.elevatedCard, in: Capsule())
                             .overlay(Capsule().stroke(theme.borderSubtle, lineWidth: 1))
                     }
                     .buttonStyle(.plain)
                 }
 
-                // Compact metadata row
                 if ev.kind == "num" {
-                    HStack(spacing: 12) {
+                    HStack(spacing: 10) {
                         metaPill(label: "Dominant", value: ev.dominant ?? "0")
                         metaPill(label: "Std Part", value: ev.std_part ?? "∞ (none)")
                         metaPill(label: "Terms", value: "\(ev.term_count ?? ev.terms?.count ?? 0)")
                     }
                 }
             } else {
-                Text("Write an expression on the left or tap a starter chip to evaluate in Lean 4.")
-                    .font(.system(size: 20, weight: .medium, design: .rounded))
+                Text("Draw or type any Levi-Civita expression, or tap a starter chip below.")
+                    .font(.system(size: 19, weight: .medium, design: .rounded))
                     .foregroundStyle(theme.secondaryInk)
                     .padding(16)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(theme.elevatedCard, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .background(theme.elevatedCard, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
             }
         }
-        .padding(16)
-        .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
+        .padding(15)
+        .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
     }
 
     private var latencyBadgeText: String {
@@ -682,50 +772,50 @@ struct ContentView: View {
     private func metaPill(label: String, value: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(label.uppercased())
-                .font(.system(size: 13, weight: .bold, design: .rounded))
+                .font(.system(size: 12, weight: .bold, design: .rounded))
                 .foregroundStyle(theme.secondaryInk)
             Text(value)
-                .font(.system(size: 18, weight: .semibold, design: .monospaced))
+                .font(.system(size: 17, weight: .semibold, design: .monospaced))
                 .foregroundStyle(theme.primaryInk)
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .background(theme.elevatedCard, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
+        .padding(.horizontal, 11)
+        .padding(.vertical, 8)
+        .background(theme.elevatedCard, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
     }
 
-    // MARK: - Interactive H ↦ N Slider Card
+    // MARK: - Generic Finite Projection H ↦ N Slider Card
 
     private var finiteSliderCard: some View {
-        let isFn = store.evalResult?.isFunction == true
-        return VStack(alignment: .leading, spacing: 12) {
+        let isFnOrGrid = store.evalResult?.isFunction == true || store.evalResult?.isHeatmap == true
+        return VStack(alignment: .leading, spacing: 11) {
             HStack(alignment: .firstTextBaseline) {
-                Text(isFn ? "LIVE SCALE  H ↦ N  (TIGHTENS STEP)" : "FINITE PROJECTION  H ↦ N")
-                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                Text("FINITE PROJECTION  H ↦ N")
+                    .font(.system(size: 14, weight: .bold, design: .rounded))
                     .tracking(1.0)
                     .foregroundStyle(theme.secondaryInk)
 
                 Spacer()
 
                 Text("N = \(Int(store.sliderN.rounded()))")
-                    .font(.system(size: 20, weight: .bold, design: .monospaced))
+                    .font(.system(size: 19, weight: .bold, design: .monospaced))
                     .monospacedDigit()
                     .foregroundStyle(theme.accentCobalt)
             }
 
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                if isFn {
-                    Text(store.evalResult?.exact ?? "f(x) at H ↦ \(Int(store.sliderN.rounded()))")
-                        .font(.system(size: 18, weight: .semibold, design: .monospaced))
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                if isFnOrGrid {
+                    Text(store.evalResult?.exact ?? "H ↦ \(Int(store.sliderN.rounded()))")
+                        .font(.system(size: 17, weight: .semibold, design: .monospaced))
                         .foregroundStyle(theme.primaryInk)
                         .lineLimit(1)
-                        .minimumScaleFactor(0.75)
+                        .minimumScaleFactor(0.72)
                 } else {
                     Text(formattedFiniteReadout)
-                        .font(.system(size: 28, weight: .bold, design: .monospaced))
+                        .font(.system(size: 26, weight: .bold, design: .monospaced))
                         .monospacedDigit()
                         .foregroundStyle(theme.primaryInk)
                         .lineLimit(1)
@@ -741,16 +831,16 @@ struct ContentView: View {
                             Task { await store.commitSliderN() }
                         } label: {
                             Text("\(snap)")
-                                .font(.system(size: 16, weight: .semibold, design: .monospaced))
+                                .font(.system(size: 15, weight: .semibold, design: .monospaced))
                                 .foregroundStyle(Int(store.sliderN.rounded()) == snap ? .white : theme.primaryInk)
-                                .padding(.horizontal, 11)
-                                .padding(.vertical, 7)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
                                 .background(
                                     Int(store.sliderN.rounded()) == snap ? theme.accentCobalt : theme.elevatedCard,
-                                    in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
                                 )
                                 .overlay(
-                                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
                                         .stroke(theme.borderSubtle, lineWidth: 1)
                                 )
                         }
@@ -777,73 +867,70 @@ struct ContentView: View {
                 }
             }
         }
-        .padding(16)
-        .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
+        .padding(15)
+        .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
     }
 
     private var formattedFiniteReadout: String {
         guard let ev = store.evalResult, ev.ok else { return "—" }
         if ev.kind == "bool" { return ev.exact ?? "—" }
         guard let val = store.displayedFiniteValue() else { return "overflow" }
-        if abs(val) >= 1e7 || (val != 0 && abs(val) < 1e-4) {
-            return String(format: "%.6e", val)
-        }
-        return String(format: "%.6f", val)
+        return MathUnicode.formatReadout(val)
     }
 
     // MARK: - History Strip Card
 
     private var historyStripCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 9) {
             HStack {
                 Text("HISTORY")
-                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .font(.system(size: 14, weight: .bold, design: .rounded))
                     .tracking(1.0)
                     .foregroundStyle(theme.secondaryInk)
                 Spacer()
                 Text("\(store.history.count) saved")
-                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                    .font(.system(size: 14, weight: .medium, design: .rounded))
                     .foregroundStyle(theme.secondaryInk)
             }
 
             if store.history.isEmpty {
                 Text("Evaluated expressions and ink drawings will appear here for 1-tap reload.")
-                    .font(.system(size: 17, design: .rounded))
+                    .font(.system(size: 16, design: .rounded))
                     .foregroundStyle(theme.secondaryInk)
-                    .padding(.vertical, 6)
+                    .padding(.vertical, 4)
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 12) {
+                    HStack(spacing: 10) {
                         ForEach(store.history) { entry in
                             Button {
                                 Task { await store.loadHistoryEntry(entry) }
                             } label: {
-                                HStack(spacing: 10) {
+                                HStack(spacing: 9) {
                                     if let img = store.thumbnailImage(for: entry) {
                                         Image(uiImage: img)
                                             .resizable()
                                             .scaledToFit()
-                                            .frame(width: 68, height: 48)
-                                            .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
-                                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.borderSubtle, lineWidth: 1))
+                                            .frame(width: 64, height: 44)
+                                            .background(Color.white, in: RoundedRectangle(cornerRadius: 7))
+                                            .overlay(RoundedRectangle(cornerRadius: 7).stroke(theme.borderSubtle, lineWidth: 1))
                                     }
-                                    VStack(alignment: .leading, spacing: 4) {
+                                    VStack(alignment: .leading, spacing: 3) {
                                         Text(entry.expression)
-                                            .font(.system(size: 17, weight: .bold, design: .monospaced))
+                                            .font(.system(size: 16, weight: .bold, design: .monospaced))
                                             .foregroundStyle(theme.primaryInk)
                                             .lineLimit(1)
                                         Text(entry.exactSummary)
-                                            .font(.system(size: 15, design: .monospaced))
+                                            .font(.system(size: 14, design: .monospaced))
                                             .foregroundStyle(theme.secondaryInk)
                                             .lineLimit(1)
                                     }
                                 }
-                                .frame(minWidth: 170, maxWidth: 260, alignment: .leading)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 10)
-                                .background(theme.elevatedCard, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
+                                .frame(minWidth: 160, maxWidth: 250, alignment: .leading)
+                                .padding(.horizontal, 11)
+                                .padding(.vertical, 9)
+                                .background(theme.elevatedCard, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
                             }
                             .buttonStyle(.plain)
                         }
@@ -851,25 +938,25 @@ struct ContentView: View {
                 }
             }
         }
-        .padding(16)
-        .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
+        .padding(15)
+        .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
     }
 
     // MARK: - Toolbar Helper Buttons
 
     private func toolButton(title: String, icon: String, active: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: 6) {
+            HStack(spacing: 5) {
                 Image(systemName: icon)
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.system(size: 16, weight: .semibold))
                 Text(title)
-                    .font(.system(size: 18, weight: .semibold, design: .rounded))
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
             }
             .foregroundStyle(active ? .white : theme.primaryInk)
-            .padding(.horizontal, 14)
-            .frame(height: 44)
-            .background(active ? theme.accentCobalt : Color.clear, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .padding(.horizontal, 12)
+            .frame(height: 40)
+            .background(active ? theme.accentCobalt : Color.clear, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         }
         .buttonStyle(.plain)
     }
@@ -877,11 +964,11 @@ struct ContentView: View {
     private func iconActionButton(icon: String, label: String, disabled: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: icon)
-                .font(.system(size: 20, weight: .semibold))
+                .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(disabled ? theme.secondaryInk.opacity(0.35) : theme.primaryInk)
-                .frame(width: 48, height: 50)
-                .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
+                .frame(width: 44, height: 46)
+                .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
         }
         .buttonStyle(.plain)
         .disabled(disabled)

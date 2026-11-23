@@ -5,7 +5,15 @@ import SwiftUI
 
 enum InfPadTab: String, CaseIterable, Identifiable {
     case calculator = "Calculator"
+    case split = "Split"
     case slides = "Slides"
+
+    var id: String { rawValue }
+}
+
+enum ExternalOutputMode: String, CaseIterable, Identifiable {
+    case slide = "Slide"
+    case calculator = "Calc"
 
     var id: String { rawValue }
 }
@@ -26,8 +34,9 @@ final class InfPadStore {
         didSet { UserDefaults.standard.set(preferLocalOCR, forKey: "infpad.preferLocalOCR") }
     }
 
-    // Navigation & AirPlay Presentation state
+    // Navigation & AirPlay / HDMI Presentation state
     var activeTab: InfPadTab = .calculator
+    var externalOutputMode: ExternalOutputMode = .slide
     var currentSlideIndex: Int = 0
     var isAirPlayClean: Bool = false
     var slideDrawings: [Int: PKDrawing] = [:]
@@ -35,10 +44,10 @@ final class InfPadStore {
     var slidePencilOnly: Bool = true
     var returnedFromSlides: Bool = false
 
-    // Calculator state (100% real Lean 4 FastLC evaluation!)
+    // Calculator state (100% real Lean 4 FastLC evaluation, generic clean opening screen!)
     var drawing = PKDrawing()
     var toolMode: DrawingToolMode = .pen
-    var expressionText: String = "1/(1+exp(-Hx))"
+    var expressionText: String = ""
     var recognizedExpr: String? = nil
     var ocrModel: String? = nil
     var ocrMs: Double? = nil
@@ -77,7 +86,6 @@ final class InfPadStore {
 
     init() {
         var savedURL = UserDefaults.standard.string(forKey: "infpad.serverURL") ?? ""
-        // Auto-migrate stale mac.tailbf1ac1.ts.net -> epicycle-2.tailbf1ac1.ts.net
         if savedURL.isEmpty || savedURL.contains("mac.tailbf1ac1.ts.net") {
             savedURL = InfPadPresets.defaultServerURL
             UserDefaults.standard.set(savedURL, forKey: "infpad.serverURL")
@@ -105,8 +113,11 @@ final class InfPadStore {
             preferLocalOCR = true
         }
         if let tabIdx = args.firstIndex(of: "-demoTab"), tabIdx + 1 < args.count {
-            let v = args[tabIdx + 1].lowercased()
-            activeTab = (v == "slides") ? .slides : .calculator
+            switch args[tabIdx + 1].lowercased() {
+            case "slides": activeTab = .slides
+            case "split": activeTab = .split
+            default: activeTab = .calculator
+            }
         }
         if let slideIdx = args.firstIndex(of: "-demoSlide"), slideIdx + 1 < args.count,
            let idx = Int(args[slideIdx + 1]) {
@@ -131,13 +142,10 @@ final class InfPadStore {
             await evaluateExpression(expressionText, saveToHistory: true)
             return
         }
-
-        if evalResult == nil {
-            await evaluateExpression(expressionText, saveToHistory: false)
-        }
+        // Clean generic launch: keep expressionText empty & evalResult nil until user draws, types, or taps a starter chip.
     }
 
-    // MARK: - Slide Navigation & Cross-Tab Jump
+    // MARK: - Slide Navigation & Cross-Pane Demo Jump
 
     func nextSlide() {
         if currentSlideIndex + 1 < SlideDeck.slides.count {
@@ -152,11 +160,15 @@ final class InfPadStore {
     }
 
     func jumpToCalculator(expr: String? = nil, clearCanvasForDrawing: Bool = false) {
-        returnedFromSlides = true
-        activeTab = .calculator
+        if activeTab == .slides {
+            returnedFromSlides = true
+            activeTab = .calculator
+        }
+        // In Split mode, stay in Split mode so the adjacent Calculator pane evaluates immediately!
         if clearCanvasForDrawing {
             clearCanvas()
             expressionText = ""
+            evalResult = nil
             return
         }
         if let expr, !expr.isEmpty {
@@ -240,13 +252,11 @@ final class InfPadStore {
             }
         }
 
-        // Fast path: if user enabled local Apple Vision OCR, recognize on-device and evaluate in real Lean 4
         if preferLocalOCR {
             await runOnDeviceVisionThenLeanEval(pngData: pngData, drawingCopy: drawingCopy, gen: gen)
             return
         }
 
-        // Tier 1 (+ Server Tier 1.5 macOS Vision fallback): POST /ocr-eval -> Real Lean 4
         do {
             let resp = try await api.ocrEvaluate(
                 baseURL: serverURL,
@@ -285,7 +295,6 @@ final class InfPadStore {
             }
             isConnected = true
         } catch {
-            // Tier 2 silent fallback: run Apple Vision OCR on-device -> send recognized text to REAL Lean 4 /eval!
             guard gen == evalGeneration else { return }
             await runOnDeviceVisionThenLeanEval(pngData: pngData, drawingCopy: drawingCopy, gen: gen)
         }
@@ -396,7 +405,7 @@ final class InfPadStore {
     }
 
     func scheduleDebouncedPlotUpdate() {
-        guard evalResult?.isFunction == true else { return }
+        guard evalResult?.isFunction == true || evalResult?.isHeatmap == true else { return }
         sliderDebounceTask?.cancel()
         sliderDebounceTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(120))
