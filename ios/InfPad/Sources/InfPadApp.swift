@@ -7,6 +7,9 @@ struct InfPadApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView(store: store)
+                .onAppear {
+                    ExternalDisplayManager.shared.attach(store: store)
+                }
         }
     }
 }

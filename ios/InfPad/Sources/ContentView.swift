@@ -5,6 +5,8 @@ struct ContentView: View {
     @Bindable var store: InfPadStore
     @FocusState private var isExprFocused: Bool
     @State private var copiedFeedback = false
+    @State private var hoveredChip: StarterChip? = nil
+    @State private var showStarterLegend = false
 
     private var theme: InfTheme { store.theme }
 
@@ -13,31 +15,37 @@ struct ContentView: View {
             theme.paperBackground.ignoresSafeArea()
 
             VStack(spacing: 0) {
-                topChromeBar
+                if !(store.activeTab == .slides && store.isAirPlayClean) {
+                    topChromeBar
+                }
 
-                GeometryReader { geo in
-                    let isLandscape = geo.size.width >= geo.size.height
-                    if isLandscape {
-                        HStack(spacing: 16) {
-                            leftCanvasPane
-                                .frame(width: geo.size.width * 0.54)
-                            rightInspectorPane
-                                .frame(maxWidth: .infinity)
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                    } else {
-                        VStack(spacing: 12) {
-                            leftCanvasPane
-                                .frame(height: geo.size.height * 0.36)
-                            rightInspectorPane
-                                .frame(maxHeight: .infinity)
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                    }
+                if store.activeTab == .slides {
+                    SlidesView(store: store)
+                } else {
+                    calculatorBody
                 }
             }
+
+            // Hidden keyboard shortcuts for iPad hardware keyboard / AirPlay presenting
+            VStack {
+                Button("") { store.activeTab = .calculator }
+                    .keyboardShortcut("1", modifiers: .command)
+                Button("") { store.activeTab = .slides }
+                    .keyboardShortcut("2", modifiers: .command)
+                if store.activeTab == .slides {
+                    Button("") { store.prevSlide() }
+                        .keyboardShortcut(.leftArrow, modifiers: [])
+                    Button("") { store.nextSlide() }
+                        .keyboardShortcut(.rightArrow, modifiers: [])
+                    Button("") { store.nextSlide() }
+                        .keyboardShortcut(.space, modifiers: [])
+                    Button("") { store.isAirPlayClean.toggle() }
+                        .keyboardShortcut("f", modifiers: [])
+                }
+            }
+            .frame(width: 0, height: 0)
+            .opacity(0)
+            .allowsHitTesting(false)
         }
         .preferredColorScheme(store.isDark ? .dark : .light)
         .sheet(isPresented: $store.showSettings) {
@@ -48,24 +56,86 @@ struct ContentView: View {
         }
     }
 
+    private var calculatorBody: some View {
+        GeometryReader { geo in
+            let isLandscape = geo.size.width >= geo.size.height
+            if isLandscape {
+                HStack(spacing: 16) {
+                    leftCanvasPane
+                        .frame(width: geo.size.width * 0.54)
+                    rightInspectorPane
+                        .frame(maxWidth: .infinity)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            } else {
+                VStack(spacing: 12) {
+                    leftCanvasPane
+                        .frame(height: geo.size.height * 0.36)
+                    rightInspectorPane
+                        .frame(maxHeight: .infinity)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            }
+        }
+    }
+
     // MARK: - Top Header Chrome
 
     private var topChromeBar: some View {
-        HStack(spacing: 16) {
+        HStack(spacing: 14) {
             HStack(spacing: 10) {
                 Image(systemName: "infinity.circle.fill")
                     .font(.system(size: 28, weight: .semibold))
                     .foregroundStyle(theme.accentCobalt)
                 Text("InfPad")
-                    .font(.system(size: 26, weight: .bold, design: .rounded))
+                    .font(.system(size: 25, weight: .bold, design: .rounded))
                     .foregroundStyle(theme.primaryInk)
-                Text("Lean 4 FastLC")
-                    .font(.system(size: 18, weight: .medium, design: .rounded))
-                    .foregroundStyle(theme.secondaryInk)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(theme.surfaceCard, in: Capsule())
+
+                if store.activeTab == .calculator && store.returnedFromSlides {
+                    Button {
+                        store.returnToSlides()
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 14, weight: .bold))
+                            Text("Slides")
+                                .font(.system(size: 16, weight: .bold, design: .rounded))
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(theme.accentCobalt, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
             }
+
+            // Clean Calculator | Slides mode switcher
+            HStack(spacing: 3) {
+                ForEach(InfPadTab.allCases) { tab in
+                    let active = store.activeTab == tab
+                    Button {
+                        store.activeTab = tab
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: tab == .calculator ? "function" : "play.rectangle.on.rectangle")
+                                .font(.system(size: 15, weight: .bold))
+                            Text(tab.rawValue)
+                                .font(.system(size: 17, weight: .bold, design: .rounded))
+                        }
+                        .foregroundStyle(active ? .white : theme.primaryInk)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 7)
+                        .background(active ? theme.accentCobalt : Color.clear, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(3)
+            .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).stroke(theme.borderSubtle, lineWidth: 1))
 
             Spacer()
 
@@ -79,11 +149,11 @@ struct ContentView: View {
                         .frame(width: 11, height: 11)
                     if let h = store.health, h.ok {
                         Text("Lean \(h.lean ?? "4.36") · \(String(format: "%.1f", h.pingMs ?? 0)) ms")
-                            .font(.system(size: 18, weight: .medium, design: .monospaced))
+                            .font(.system(size: 17, weight: .medium, design: .monospaced))
                             .foregroundStyle(theme.primaryInk)
                     } else {
                         Text(store.isCheckingHealth ? "Connecting…" : "Offline · Tap to Retry")
-                            .font(.system(size: 18, weight: .medium, design: .rounded))
+                            .font(.system(size: 17, weight: .medium, design: .rounded))
                             .foregroundStyle(theme.errorRed)
                     }
                 }
@@ -101,7 +171,7 @@ struct ContentView: View {
                 Image(systemName: store.isDark ? "sun.max.fill" : "moon.fill")
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(theme.primaryInk)
-                    .frame(width: 46, height: 46)
+                    .frame(width: 44, height: 44)
                     .background(theme.surfaceCard, in: Circle())
                     .overlay(Circle().stroke(theme.borderSubtle, lineWidth: 1))
             }
@@ -115,15 +185,15 @@ struct ContentView: View {
                 Image(systemName: "gearshape.fill")
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(theme.primaryInk)
-                    .frame(width: 46, height: 46)
+                    .frame(width: 44, height: 44)
                     .background(theme.surfaceCard, in: Circle())
                     .overlay(Circle().stroke(theme.borderSubtle, lineWidth: 1))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Settings")
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 10)
         .background(theme.paperBackground)
         .overlay(alignment: .bottom) {
             Rectangle().fill(theme.borderSubtle).frame(height: 1)
@@ -236,16 +306,43 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            // 1-Tap Starter Chips Row
+            // 1-Tap Starter Chips Row (with Apple Pencil / pointer hover explanation + (?) finger legend)
             VStack(alignment: .leading, spacing: 6) {
-                Text("1-TAP STARTERS")
-                    .font(.system(size: 14, weight: .bold, design: .rounded))
-                    .tracking(1.0)
-                    .foregroundStyle(theme.secondaryInk)
+                HStack(spacing: 8) {
+                    Text("1-TAP STARTERS")
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .tracking(1.0)
+                        .foregroundStyle(theme.secondaryInk)
+
+                    if let activeHint = (hoveredChip ?? InfPadPresets.starterChips.first(where: { $0.expr == store.expressionText }))?.hint {
+                        Text("·  \(activeHint)")
+                            .font(.system(size: 14, weight: .medium, design: .rounded))
+                            .foregroundStyle(hoveredChip != nil ? theme.accentCobalt : theme.secondaryInk)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+
+                    Spacer(minLength: 4)
+
+                    Button {
+                        showStarterLegend.toggle()
+                    } label: {
+                        Image(systemName: "questionmark.circle")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(theme.accentCobalt)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Starter expression explanations")
+                    .popover(isPresented: $showStarterLegend, arrowEdge: .bottom) {
+                        starterLegendPopover
+                    }
+                }
 
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 10) {
                         ForEach(InfPadPresets.starterChips) { chip in
+                            let isSelected = store.expressionText == chip.expr
+                            let isHovered = hoveredChip?.id == chip.id
                             Button {
                                 isExprFocused = false
                                 Task { await store.selectStarterChip(chip) }
@@ -255,21 +352,65 @@ struct ContentView: View {
                                     .foregroundStyle(theme.primaryInk)
                                     .padding(.horizontal, 16)
                                     .padding(.vertical, 11)
-                                    .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                    .background(
+                                        isHovered ? theme.accentCobalt.opacity(0.10) : theme.surfaceCard,
+                                        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    )
                                     .overlay(
                                         RoundedRectangle(cornerRadius: 12, style: .continuous)
                                             .stroke(
-                                                store.expressionText == chip.expr ? theme.accentCobalt : theme.borderSubtle,
-                                                lineWidth: store.expressionText == chip.expr ? 2 : 1
+                                                (isSelected || isHovered) ? theme.accentCobalt : theme.borderSubtle,
+                                                lineWidth: (isSelected || isHovered) ? 2 : 1
                                             )
                                     )
                             }
                             .buttonStyle(.plain)
+                            .help(chip.hint)
+                            .onHover { inside in
+                                if inside {
+                                    hoveredChip = chip
+                                } else if hoveredChip?.id == chip.id {
+                                    hoveredChip = nil
+                                }
+                            }
                         }
                     }
                 }
             }
         }
+    }
+
+    private var starterLegendPopover: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Starter Expressions")
+                .font(.system(size: 20, weight: .bold, design: .rounded))
+                .foregroundStyle(theme.primaryInk)
+
+            ForEach(InfPadPresets.starterChips) { chip in
+                Button {
+                    showStarterLegend = false
+                    isExprFocused = false
+                    Task { await store.selectStarterChip(chip) }
+                } label: {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(chip.label)
+                            .font(.system(size: 17, weight: .bold, design: .monospaced))
+                            .foregroundStyle(theme.accentCobalt)
+                        Text(chip.hint)
+                            .font(.system(size: 15, design: .rounded))
+                            .foregroundStyle(theme.primaryInk)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                    .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(18)
+        .frame(width: 480)
+        .background(theme.paperBackground)
     }
 
     // MARK: - Right Pane: Recognized Expr + Lean 4 FastLC Result + H ↦ N Slider + History

@@ -10,8 +10,9 @@
  *   PORT=4420 bun run server/server.ts
  */
 
-import { timingSafeEqual } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { randomUUID, timingSafeEqual } from "node:crypto";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 /** Load key=value pairs from server/.env without overriding explicit env vars or logging secrets. */
@@ -216,6 +217,10 @@ function sanitizeLeanInfExpr(raw: string): string {
   // Normalize e^(...) -> exp(...) (handles nested parens like 1/(1+e^(-H*(x-0.5))))
   s = rewriteEToExp(s);
 
+  // Common Vision OCR slips on math glyphs (e.g. dstep(O) -> dstep(0))
+  s = s.replace(/\bdstep\s*\(\s*[Oo]\s*\)/g, "dstep(0)");
+  s = s.replace(/\bstep\s*\(\s*[Oo]\s*\)/g, "step(0)");
+
   // Catch accidental concatenation of H / eps / x
   s = s.replace(/\bHeps\b/g, "H*eps");
   s = s.replace(/\bepsH\b/g, "eps*H");
@@ -401,6 +406,100 @@ async function callGeminiVisionOcr(imageBase64: string, mimeType: string): Promi
   }
 
   throw new Error(lastErr);
+}
+
+const MAC_VISION_OCR_SWIFT = `
+import Foundation
+import AppKit
+import Vision
+
+guard CommandLine.arguments.count > 1,
+      let img = NSImage(contentsOfFile: CommandLine.arguments[1]),
+      let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+    print("")
+    exit(0)
+}
+let req = VNRecognizeTextRequest()
+req.recognitionLevel = .accurate
+req.usesLanguageCorrection = false
+req.recognitionLanguages = ["en-US"]
+req.customWords = ["dstep", "ddstep", "step", "exp", "eps", "diff", "deriv", "std", "sin", "cos", "tan", "ln", "log", "sqrt", "abs", "Hx", "H*x"]
+let handler = VNImageRequestHandler(cgImage: cg, options: [:])
+try? handler.perform([req])
+let items = (req.results ?? []).compactMap { obs -> (String, CGRect)? in
+    guard let s = obs.topCandidates(1).first?.string.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty else { return nil }
+    return (s, obs.boundingBox)
+}
+if items.count == 2 {
+    let a = items[0], b = items[1]
+    let xOv = min(a.1.maxX, b.1.maxX) - max(a.1.minX, b.1.minX)
+    let minW = min(a.1.width, b.1.width)
+    let yGap = abs(a.1.midY - b.1.midY)
+    if minW > 0 && xOv / minW > 0.35 && yGap > max(a.1.height, b.1.height) * 0.65 {
+        let top = a.1.midY > b.1.midY ? a.0 : b.0
+        let bot = a.1.midY > b.1.midY ? b.0 : a.0
+        print("(\\(top))/(\\(bot))")
+        exit(0)
+    }
+}
+let sorted = items.sorted { $0.1.minX < $1.1.minX }
+var out = ""
+var prev: (String, CGRect)? = nil
+for cur in sorted {
+    if let p = prev {
+        if cur.1.midY > p.1.midY + p.1.height * 0.32 && cur.1.height < p.1.height * 0.8 && !cur.0.hasPrefix("^") {
+            out += "^(\\(cur.0))"
+        } else {
+            out += " " + cur.0
+        }
+    } else {
+        out = cur.0
+    }
+    prev = cur
+}
+print(out)
+`;
+
+async function callLocalMacVisionOcr(imageBase64: string): Promise<GeminiOcrResult> {
+  const t0 = performance.now();
+  const cleanBase64 = imageBase64.replace(/^data:[^;]+;base64,/, "").replace(/\s+/g, "");
+  const tmpPath = join(tmpdir(), `infpad_vision_${randomUUID()}.png`);
+  try {
+    writeFileSync(tmpPath, Buffer.from(cleanBase64, "base64"));
+    const proc = Bun.spawn(["/usr/bin/swift", "-e", MAC_VISION_OCR_SWIFT, tmpPath], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const timer = setTimeout(() => {
+      try { proc.kill("SIGKILL"); } catch {}
+    }, 6000);
+    let stdout = "";
+    try {
+      stdout = await new Response(proc.stdout).text();
+      await proc.exited;
+    } finally {
+      clearTimeout(timer);
+    }
+    const expr = stdout.trim();
+    const ocrMs = Math.round((performance.now() - t0) * 100) / 100;
+    return {
+      expr,
+      confidence: expr ? 0.85 : 0.0,
+      note: "mac-vision-local-fallback",
+      model: "apple-vision-mac",
+      ocrMs,
+    };
+  } finally {
+    try { unlinkSync(tmpPath); } catch {}
+  }
+}
+
+async function callVisionOcrWithFallback(imageBase64: string, mimeType: string): Promise<GeminiOcrResult> {
+  try {
+    return await callGeminiVisionOcr(imageBase64, mimeType);
+  } catch {
+    return await callLocalMacVisionOcr(imageBase64);
+  }
 }
 
 const startedAt = Date.now();
@@ -620,7 +719,7 @@ const server = Bun.serve({
         if (!Number.isFinite(order)) order = 10;
         order = Math.max(4, Math.min(24, Math.round(order)));
 
-        const ocr = await callGeminiVisionOcr(imageBase64, mimeType);
+        const ocr = await callVisionOcrWithFallback(imageBase64, mimeType);
         const recognizedExpr = ocr.expr.trim();
         const normalizedExpr = sanitizeLeanInfExpr(recognizedExpr);
 

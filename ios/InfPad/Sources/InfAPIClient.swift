@@ -72,7 +72,7 @@ enum KeychainTokenStore {
 final class InfAPIClient {
     private let session: URLSession
 
-    /// Allowed characters for a single query parameter value (explicitly excludes `+`, `&`, `=`, `#`, `%`, space).
+    /// Strict RFC-3986 query value character set (excludes `+`, `&`, `=`, `#`, `%`, spaces).
     private static let strictQueryValueAllowed: CharacterSet = {
         var set = CharacterSet.alphanumerics
         set.insert(charactersIn: "-._~")
@@ -81,8 +81,8 @@ final class InfAPIClient {
 
     init() {
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 25
-        config.timeoutIntervalForResource = 35
+        config.timeoutIntervalForRequest = 15
+        config.timeoutIntervalForResource = 25
         config.waitsForConnectivity = false
         self.session = URLSession(configuration: config)
     }
@@ -107,31 +107,63 @@ final class InfAPIClient {
         return s
     }
 
+    /// Ordered failover endpoints: configured URL first, then epicycle-2 / legacy mac Funnel if Tailscale renames host.
+    private func candidateBases(primary: String) -> [String] {
+        let first = normalizedBase(primary)
+        var list = [first]
+        if first.contains("tailbf1ac1.ts.net") {
+            let alt = first.contains("epicycle-2.")
+                ? InfPadPresets.legacyServerURL
+                : InfPadPresets.defaultServerURL
+            if !list.contains(alt) { list.append(alt) }
+        }
+        return list
+    }
+
     private func encodeQueryValue(_ value: String) -> String {
         value.addingPercentEncoding(withAllowedCharacters: Self.strictQueryValueAllowed) ?? value
     }
 
-    func health(baseURL: String) async throws -> HealthResponse {
-        let base = normalizedBase(baseURL)
-        guard let url = URL(string: "\(base)/health") else { throw InfAPIError.invalidURL }
-        let (data, response) = try await session.data(from: url)
-        try validateHTTP(response, data: data)
-        return try JSONDecoder().decode(HealthResponse.self, from: data)
+    func health(baseURL: String) async throws -> (response: HealthResponse, resolvedBase: String) {
+        var lastError: Error = InfAPIError.invalidURL
+        for base in candidateBases(primary: baseURL) {
+            guard let url = URL(string: "\(base)/health") else { continue }
+            var req = URLRequest(url: url)
+            req.timeoutInterval = 3.5
+            do {
+                let (data, response) = try await session.data(for: req)
+                try validateHTTP(response, data: data)
+                let decoded = try JSONDecoder().decode(HealthResponse.self, from: data)
+                return (decoded, base)
+            } catch {
+                lastError = error
+            }
+        }
+        throw lastError
     }
 
     func evaluate(baseURL: String, expr: String, bigN: Double = 100, order: Int = 10) async throws -> EvalResponse {
-        let base = normalizedBase(baseURL)
         let nVal = Int(max(1, bigN.rounded()))
         let encodedExpr = encodeQueryValue(expr)
-        guard let url = URL(string: "\(base)/eval?expr=\(encodedExpr)&N=\(nVal)&order=\(order)") else {
-            throw InfAPIError.invalidURL
+        var lastError: Error = InfAPIError.invalidURL
+        for base in candidateBases(primary: baseURL) {
+            guard let url = URL(string: "\(base)/eval?expr=\(encodedExpr)&N=\(nVal)&order=\(order)") else {
+                continue
+            }
+            var req = URLRequest(url: url)
+            req.timeoutInterval = 4.0
+            do {
+                let (data, response) = try await session.data(for: req)
+                if let http = response as? HTTPURLResponse, http.statusCode >= 500 {
+                    let msg = parseServerError(data) ?? "Internal server error"
+                    throw InfAPIError.httpError(http.statusCode, msg)
+                }
+                return try JSONDecoder().decode(EvalResponse.self, from: data)
+            } catch {
+                lastError = error
+            }
         }
-        let (data, response) = try await session.data(from: url)
-        if let http = response as? HTTPURLResponse, http.statusCode >= 500 {
-            let msg = parseServerError(data) ?? "Internal server error"
-            throw InfAPIError.httpError(http.statusCode, msg)
-        }
-        return try JSONDecoder().decode(EvalResponse.self, from: data)
+        throw lastError
     }
 
     func ocrEvaluate(
@@ -142,9 +174,6 @@ final class InfAPIClient {
     ) async throws -> OcrEvalResponse {
         let token = Self.resolvedToken()
         guard !token.isEmpty else { throw InfAPIError.missingToken }
-
-        let base = normalizedBase(baseURL)
-        guard let url = URL(string: "\(base)/ocr-eval") else { throw InfAPIError.invalidURL }
 
         struct Payload: Encodable {
             let imageBase64: String
@@ -159,16 +188,27 @@ final class InfAPIClient {
             N: Int(max(1, bigN.rounded())),
             order: order
         )
+        let encodedBody = try JSONEncoder().encode(body)
 
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.setValue(token, forHTTPHeaderField: "X-InfPad-Token")
-        req.httpBody = try JSONEncoder().encode(body)
+        var lastError: Error = InfAPIError.invalidURL
+        for base in candidateBases(primary: baseURL) {
+            guard let url = URL(string: "\(base)/ocr-eval") else { continue }
+            var req = URLRequest(url: url)
+            req.httpMethod = "POST"
+            req.timeoutInterval = 9.0
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.setValue(token, forHTTPHeaderField: "X-InfPad-Token")
+            req.httpBody = encodedBody
 
-        let (data, response) = try await session.data(for: req)
-        try validateHTTP(response, data: data)
-        return try JSONDecoder().decode(OcrEvalResponse.self, from: data)
+            do {
+                let (data, response) = try await session.data(for: req)
+                try validateHTTP(response, data: data)
+                return try JSONDecoder().decode(OcrEvalResponse.self, from: data)
+            } catch {
+                lastError = error
+            }
+        }
+        throw lastError
     }
 
     private func validateHTTP(_ response: URLResponse, data: Data) throws {

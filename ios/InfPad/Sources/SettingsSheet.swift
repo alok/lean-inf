@@ -18,7 +18,7 @@ struct SettingsSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Server Endpoint") {
+                Section("Lean 4 Server Endpoint") {
                     TextField("API Base URL", text: $store.serverURL)
                         .font(.system(size: 18, design: .monospaced))
                         .textInputAutocapitalization(.never)
@@ -26,7 +26,7 @@ struct SettingsSheet: View {
                         .keyboardType(.URL)
 
                     HStack(spacing: 12) {
-                        Button("Tailscale Funnel (HTTPS)") {
+                        Button("Epicycle-2 Funnel (HTTPS)") {
                             store.serverURL = InfPadPresets.defaultServerURL
                             Task { await store.checkHealth() }
                         }
@@ -45,7 +45,7 @@ struct SettingsSheet: View {
                             .fill(store.isConnected ? Color.green : Color.red)
                             .frame(width: 12, height: 12)
                         if let h = store.health, h.ok {
-                            Text("Connected · Lean \(h.lean ?? "4") · \(String(format: "%.1f", h.pingMs ?? 0)) ms · OCR \(h.ocrConfigured == true ? "Ready" : "Missing")")
+                            Text("Connected · Lean \(h.lean ?? "4.36") · \(String(format: "%.1f", h.pingMs ?? 0)) ms · OCR \(h.ocrConfigured == true ? "Ready" : "Fallback")")
                                 .font(.system(size: 17, design: .rounded))
                         } else {
                             Text("Disconnected from \(store.serverURL)")
@@ -59,7 +59,17 @@ struct SettingsSheet: View {
                     }
                 }
 
-                Section("OCR Authentication (X-InfPad-Token)") {
+                Section("Handwriting OCR Pipeline (Always Evaluates in Lean 4)") {
+                    Toggle(isOn: $store.preferLocalOCR) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Prefer On-Device Apple Vision OCR")
+                                .font(.system(size: 18, design: .rounded))
+                            Text("Fast local Neural Engine transcription (< 120 ms), still sent to real Lean 4 FastLC. Otherwise Gemini Vision runs first with silent Apple Vision fallback.")
+                                .font(.system(size: 14, design: .rounded))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
                     HStack {
                         Text("Active Token Source")
                             .font(.system(size: 18, design: .rounded))

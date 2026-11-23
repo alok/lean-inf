@@ -3,6 +3,13 @@ import Observation
 import PencilKit
 import SwiftUI
 
+enum InfPadTab: String, CaseIterable, Identifiable {
+    case calculator = "Calculator"
+    case slides = "Slides"
+
+    var id: String { rawValue }
+}
+
 @MainActor
 @Observable
 final class InfPadStore {
@@ -15,7 +22,20 @@ final class InfPadStore {
     var order: Int {
         didSet { UserDefaults.standard.set(order, forKey: "infpad.order") }
     }
+    var preferLocalOCR: Bool {
+        didSet { UserDefaults.standard.set(preferLocalOCR, forKey: "infpad.preferLocalOCR") }
+    }
 
+    // Navigation & AirPlay Presentation state
+    var activeTab: InfPadTab = .calculator
+    var currentSlideIndex: Int = 0
+    var isAirPlayClean: Bool = false
+    var slideDrawings: [Int: PKDrawing] = [:]
+    var slideAnnotationTool: SlideInkTool = .pen
+    var slidePencilOnly: Bool = true
+    var returnedFromSlides: Bool = false
+
+    // Calculator state (100% real Lean 4 FastLC evaluation!)
     var drawing = PKDrawing()
     var toolMode: DrawingToolMode = .pen
     var expressionText: String = "1/(1+exp(-Hx))"
@@ -56,9 +76,15 @@ final class InfPadStore {
     var theme: InfTheme { InfTheme(isDark: isDark) }
 
     init() {
-        let savedURL = UserDefaults.standard.string(forKey: "infpad.serverURL")
-        self.serverURL = (savedURL?.isEmpty == false ? savedURL! : InfPadPresets.defaultServerURL)
+        var savedURL = UserDefaults.standard.string(forKey: "infpad.serverURL") ?? ""
+        // Auto-migrate stale mac.tailbf1ac1.ts.net -> epicycle-2.tailbf1ac1.ts.net
+        if savedURL.isEmpty || savedURL.contains("mac.tailbf1ac1.ts.net") {
+            savedURL = InfPadPresets.defaultServerURL
+            UserDefaults.standard.set(savedURL, forKey: "infpad.serverURL")
+        }
+        self.serverURL = savedURL
         self.isDark = UserDefaults.standard.bool(forKey: "infpad.isDark")
+        self.preferLocalOCR = UserDefaults.standard.bool(forKey: "infpad.preferLocalOCR")
         let savedOrder = UserDefaults.standard.integer(forKey: "infpad.order")
         self.order = (4...24).contains(savedOrder) ? savedOrder : 10
 
@@ -75,10 +101,25 @@ final class InfPadStore {
         if let apiIdx = args.firstIndex(of: "-apiBase"), apiIdx + 1 < args.count {
             serverURL = args[apiIdx + 1]
         }
+        if args.contains("-preferLocalOCR") {
+            preferLocalOCR = true
+        }
+        if let tabIdx = args.firstIndex(of: "-demoTab"), tabIdx + 1 < args.count {
+            let v = args[tabIdx + 1].lowercased()
+            activeTab = (v == "slides") ? .slides : .calculator
+        }
+        if let slideIdx = args.firstIndex(of: "-demoSlide"), slideIdx + 1 < args.count,
+           let idx = Int(args[slideIdx + 1]) {
+            currentSlideIndex = max(0, min(SlideDeck.slides.count - 1, idx))
+        }
+        if args.contains("-demoAirPlayClean") {
+            isAirPlayClean = true
+        }
 
         await checkHealth()
 
         if args.contains("-demoInk") {
+            activeTab = .calculator
             drawing = InfCanvasController.makeDemoDrawing()
             syncUndoState()
             await evaluateInk()
@@ -91,11 +132,48 @@ final class InfPadStore {
             return
         }
 
-        // On clean startup, pre-evaluate starter expression so the right inspector looks alive immediately
         if evalResult == nil {
             await evaluateExpression(expressionText, saveToHistory: false)
         }
     }
+
+    // MARK: - Slide Navigation & Cross-Tab Jump
+
+    func nextSlide() {
+        if currentSlideIndex + 1 < SlideDeck.slides.count {
+            currentSlideIndex += 1
+        }
+    }
+
+    func prevSlide() {
+        if currentSlideIndex > 0 {
+            currentSlideIndex -= 1
+        }
+    }
+
+    func jumpToCalculator(expr: String? = nil, clearCanvasForDrawing: Bool = false) {
+        returnedFromSlides = true
+        activeTab = .calculator
+        if clearCanvasForDrawing {
+            clearCanvas()
+            expressionText = ""
+            return
+        }
+        if let expr, !expr.isEmpty {
+            expressionText = expr
+            Task { await evaluateExpression(expr, saveToHistory: true) }
+        }
+    }
+
+    func returnToSlides() {
+        activeTab = .slides
+    }
+
+    func clearSlideDrawing(index: Int) {
+        slideDrawings[index] = PKDrawing()
+    }
+
+    // MARK: - Canvas Controls
 
     func syncUndoState() {
         canUndo = canvasController.canUndo
@@ -122,15 +200,22 @@ final class InfPadStore {
         isCheckingHealth = true
         defer { isCheckingHealth = false }
         do {
-            let h = try await api.health(baseURL: serverURL)
+            let (h, resolved) = try await api.health(baseURL: serverURL)
             health = h
             isConnected = h.ok
+            if resolved != serverURL {
+                serverURL = resolved
+            }
         } catch {
             health = nil
             isConnected = false
         }
     }
 
+    /// 3-Tier OCR -> REAL Lean 4 FastLC pipeline:
+    /// Tier 1: POST /ocr-eval (Gemini Vision -> Lean 4)
+    /// Tier 1.5: Mac server silently falls back to macOS Vision -> Lean 4
+    /// Tier 2: On-device Apple Vision Neural Engine OCR -> GET /eval on REAL Lean 4!
     func evaluateInk() async {
         guard !drawing.strokes.isEmpty else {
             errorMessage = "Draw an expression on the canvas first, or tap a starter chip below."
@@ -155,6 +240,13 @@ final class InfPadStore {
             }
         }
 
+        // Fast path: if user enabled local Apple Vision OCR, recognize on-device and evaluate in real Lean 4
+        if preferLocalOCR {
+            await runOnDeviceVisionThenLeanEval(pngData: pngData, drawingCopy: drawingCopy, gen: gen)
+            return
+        }
+
+        // Tier 1 (+ Server Tier 1.5 macOS Vision fallback): POST /ocr-eval -> Real Lean 4
         do {
             let resp = try await api.ocrEvaluate(
                 baseURL: serverURL,
@@ -193,8 +285,53 @@ final class InfPadStore {
             }
             isConnected = true
         } catch {
+            // Tier 2 silent fallback: run Apple Vision OCR on-device -> send recognized text to REAL Lean 4 /eval!
             guard gen == evalGeneration else { return }
-            errorMessage = error.localizedDescription
+            await runOnDeviceVisionThenLeanEval(pngData: pngData, drawingCopy: drawingCopy, gen: gen)
+        }
+    }
+
+    private func runOnDeviceVisionThenLeanEval(pngData: Data, drawingCopy: PKDrawing, gen: UInt64) async {
+        let rec = await LocalHandwritingOCR.recognize(pngData: pngData)
+        guard gen == evalGeneration else { return }
+
+        ocrMs = rec.ocrMs
+        ocrModel = "apple-vision"
+        recognizedExpr = rec.rawExpr
+
+        guard !rec.normalizedExpr.isEmpty else {
+            errorMessage = "Could not recognize math ink. Try writing larger or use the text field."
+            return
+        }
+        expressionText = rec.normalizedExpr
+
+        do {
+            let ev = try await api.evaluate(
+                baseURL: serverURL,
+                expr: rec.normalizedExpr,
+                bigN: sliderN,
+                order: order
+            )
+            guard gen == evalGeneration else { return }
+            evalResult = ev
+            leanMs = ev.serverMs
+            isConnected = true
+            if !ev.ok {
+                errorMessage = ev.error ?? "Lean 4 could not evaluate recognized expression."
+            } else {
+                appendHistory(
+                    expression: rec.normalizedExpr,
+                    recognizedExpr: rec.rawExpr,
+                    eval: ev,
+                    ocrMs: rec.ocrMs,
+                    leanMs: ev.serverMs,
+                    drawingSnapshot: drawingCopy
+                )
+            }
+        } catch {
+            guard gen == evalGeneration else { return }
+            isConnected = false
+            errorMessage = "Recognized '\(rec.normalizedExpr)', but Lean 4 server is unreachable: \(error.localizedDescription)"
         }
     }
 
@@ -248,6 +385,7 @@ final class InfPadStore {
             }
         } catch {
             guard gen == evalGeneration else { return }
+            isConnected = false
             errorMessage = error.localizedDescription
         }
     }
@@ -289,9 +427,10 @@ final class InfPadStore {
             if ev.ok {
                 evalResult = ev
                 leanMs = ev.serverMs
+                isConnected = true
             }
         } catch {
-            // Local finite preview stays visible even if network blips during slider scrub
+            // Local finite preview stays visible if network blips during slider scrub
         }
     }
 
@@ -357,7 +496,6 @@ final class InfPadStore {
         leanMs: Double?,
         drawingSnapshot: PKDrawing?
     ) {
-        // Avoid back-to-back duplicate non-drawing entries
         if drawingSnapshot == nil, let first = history.first, first.expression == expression, !first.hasDrawing {
             return
         }

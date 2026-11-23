@@ -187,17 +187,46 @@ struct StarterChip: Identifiable {
 }
 
 enum InfPadPresets {
-    static let defaultServerURL = "https://mac.tailbf1ac1.ts.net/inf-api"
+    static let defaultServerURL = "https://epicycle-2.tailbf1ac1.ts.net/inf-api"
+    static let legacyServerURL = "https://mac.tailbf1ac1.ts.net/inf-api"
     static let simulatorLocalURL = "http://127.0.0.1:4420"
 
     static let starterChips: [StarterChip] = [
-        StarterChip(label: "1/(1+exp(-Hx))", expr: "1/(1+exp(-Hx))", hint: "Logistic step function"),
-        StarterChip(label: "dstep(x)", expr: "dstep(x)", hint: "Dirac delta curve"),
-        StarterChip(label: "dstep(0)", expr: "dstep(0)", hint: "Dirac delta peak"),
-        StarterChip(label: "ddstep(eps)", expr: "ddstep(eps)", hint: "Delta derivative"),
-        StarterChip(label: "exp(H*eps)", expr: "exp(H*eps)", hint: "Exact cancellation"),
-        StarterChip(label: "(1 + eps)^(-1)", expr: "(1 + eps)^(-1)", hint: "Geometric series"),
-        StarterChip(label: "diff(x^4, x, 2)", expr: "diff(x^4, x, 2)", hint: "Infinitesimal slope"),
+        StarterChip(
+            label: "1/(1+exp(-Hx))",
+            expr: "1/(1+exp(-Hx))",
+            hint: "Nonstandard logistic step function L_H(x) (0 for x < 0, 1/2 at 0, 1 for x > 0)"
+        ),
+        StarterChip(
+            label: "dstep(x)",
+            expr: "dstep(x)",
+            hint: "Dirac delta L'_H(x) via central difference at step eps^2 (height H/4, width O(eps), area 1)"
+        ),
+        StarterChip(
+            label: "dstep(0)",
+            expr: "dstep(0)",
+            hint: "Dirac delta peak at x = 0: (1/4)H - (1/48)eps + ... (~25 at H -> 100)"
+        ),
+        StarterChip(
+            label: "ddstep(eps)",
+            expr: "ddstep(eps)",
+            hint: "Derivative of Dirac delta (dipole L''_H(eps)) via 2nd central difference at step eps^2"
+        ),
+        StarterChip(
+            label: "exp(H*eps)",
+            expr: "exp(H*eps)",
+            hint: "Exact cancellation: H * eps = 1, so exp(H * eps) = e"
+        ),
+        StarterChip(
+            label: "(1 + eps)^(-1)",
+            expr: "(1 + eps)^(-1)",
+            hint: "Geometric series 1 - eps + eps^2 - eps^3 + ... via Newton inversion"
+        ),
+        StarterChip(
+            label: "diff(x^4, x, 2)",
+            expr: "diff(x^4, x, 2)",
+            hint: "Automatic derivative (f(2 + eps) - f(2)) / eps = 32 + 24eps + 8eps^2 + eps^3"
+        ),
     ]
 
     static let quickSymbols: [String] = [
