@@ -1,5 +1,4 @@
 import Init.Data.Rat
-import LeanInf.LeviCivitaNum
 
 namespace LeanInf
 
