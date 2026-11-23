@@ -1,0 +1,48 @@
+name: InfPad
+options:
+  bundleIdPrefix: com.alok
+  deploymentTarget:
+    iOS: "27.0"
+  createIntermediateGroups: true
+configFiles:
+  Debug: Config.xcconfig
+  Release: Config.xcconfig
+settings:
+  base:
+    DEVELOPMENT_TEAM: 5795ZPYZ2T
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    TARGETED_DEVICE_FAMILY: "2"
+    INFOPLIST_KEY_UIRequiresFullScreen: false
+    GENERATE_INFOPLIST_FILE: NO
+targets:
+  InfPad:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: InfPad
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        UILaunchScreen: {}
+        UIRequiresFullScreen: false
+        UIApplicationSupportsIndirectInputEvents: true
+        ITSAppUsesNonExemptEncryption: false
+        INFPAD_OCR_TOKEN: "$(INFPAD_OCR_TOKEN)"
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.alok.InfPad
+        TARGETED_DEVICE_FAMILY: "2"
+        INFOPLIST_KEY_UIRequiresFullScreen: false

@@ -1,0 +1,4 @@
+// Checked-in base build configuration for InfPad.
+// Secrets.xcconfig (gitignored) is optionally included if present.
+INFPAD_OCR_TOKEN =
+#include? "Secrets.xcconfig"
