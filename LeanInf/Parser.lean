@@ -130,6 +130,7 @@ partial def tokenize (input : String) : Except String (List Token) :=
         match c, rest with
         | '+', _ => go (.plus :: acc) rest
         | '-', _ => go (.minus :: acc) rest
+        | '−', _ => go (.minus :: acc) rest
         | '*', _ => go (.star :: acc) rest
         | '×', _ => go (.star :: acc) rest
         | '·', _ => go (.star :: acc) rest
@@ -312,9 +313,82 @@ mutual
     | tok => throw s!"Unexpected token: {repr tok}"
 end
 
+private def builtinIdentNames : List String :=
+  [ "H", "h", "ε", "eps", "d", "pi", "π", "e", "x"
+  , "sin", "cos", "tan", "exp", "ln", "log", "sqrt", "abs", "std"
+  , "sign", "signum", "lead", "order", "coeff", "trunc", "eval"
+  , "step", "dstep", "ddstep", "diff", "deriv"
+  , "isinf", "isfinite", "isinfsm", "isinfinitesimal", "levi_civita_n" ]
+
+private def splitGluedMathIdent (s : String) : Option (List String) :=
+  if s.length < 2 || builtinIdentNames.contains s then none
+  else
+    let rec go (acc : List String) : List Char → Option (List String)
+      | [] =>
+        if acc.length ≥ 2 then some acc.reverse else none
+      | 'e' :: 'p' :: 's' :: rest => go ("eps" :: acc) rest
+      | 'p' :: 'i' :: rest => go ("pi" :: acc) rest
+      | c :: rest =>
+        if c == 'H' || c == 'h' || c == 'ε' || c == 'π' || c == 'x' || c == 'd' then
+          go (String.singleton c :: acc) rest
+        else
+          none
+    go [] s.toList
+
+private partial def collectDefinedNames (toks : List Token) : List String :=
+  let rec goDiffParam (depth : Nat) (commas : Nat) : List Token → Option String
+    | [] => none
+    | .lparen :: rest => goDiffParam (depth + 1) commas rest
+    | .rparen :: rest =>
+      if depth == 0 then none else goDiffParam (depth - 1) commas rest
+    | .comma :: (.ident p) :: .comma :: _ =>
+      if depth == 0 && commas == 0 then some p else none
+    | .comma :: rest =>
+      goDiffParam depth (if depth == 0 then commas + 1 else commas) rest
+    | _ :: rest => goDiffParam depth commas rest
+  let rec go (atStmtStart : Bool) (acc : List String) : List Token → List String
+    | [] => acc
+    | .semi :: rest => go true acc rest
+    | .ident "diff" :: .lparen :: rest =>
+      let acc' := match goDiffParam 0 0 rest with
+        | some p => p :: acc
+        | none => acc
+      go false acc' rest
+    | .ident fn :: .lparen :: .ident param :: .rparen :: .eq :: rest =>
+      if atStmtStart then go false (fn :: param :: acc) rest
+      else go false acc (.lparen :: .ident param :: .rparen :: .eq :: rest)
+    | .ident fn :: .ident param :: .eq :: rest =>
+      if atStmtStart then go false (fn :: param :: acc) rest
+      else go false acc (.ident param :: .eq :: rest)
+    | .ident name :: .eq :: rest =>
+      if atStmtStart then go false (name :: acc) rest
+      else go false acc (.eq :: rest)
+    | _ :: rest => go false acc rest
+  go true [] toks
+
+private def expandGluedTokens (toks : List Token) : List Token :=
+  let defined := collectDefinedNames toks
+  let rec intersperseStar : List String → List Token
+    | [] => []
+    | [a] => [.ident a]
+    | a :: rest => .ident a :: .star :: intersperseStar rest
+  let rec go (acc : List Token) : List Token → List Token
+    | [] => acc.reverse
+    | .ident name :: rest =>
+      let followedByCall := match rest with | .lparen :: _ => true | _ => false
+      if followedByCall || defined.contains name then
+        go (.ident name :: acc) rest
+      else
+        match splitGluedMathIdent name with
+        | some parts => go ((intersperseStar parts).reverse ++ acc) rest
+        | none => go (.ident name :: acc) rest
+    | tok :: rest => go (tok :: acc) rest
+  go [] toks
+
 /-- Parse a calculator string into an `Expr`. -/
 def parseExpr (input : String) : Except String Expr := do
-  let toks ← tokenize input
+  let rawToks ← tokenize input
+  let toks := expandGluedTokens rawToks
   let (e, st) ← (parseProgram).run { tokens := toks }
   match st.tokens with
   | [.eof] | [] => return e
@@ -345,6 +419,35 @@ def defaultEnv (order : Nat := 10) : Env :=
 private def expectNum : CalcVal → Except String FastLC
   | .num v => .ok v
   | .bool b => .error s!"Expected a Levi-Civita number, got boolean '{b}'"
+
+private def matchExpScaled : Expr → Option (Option Expr × Expr)
+  | .call "exp" [u] => some (none, u)
+  | .bin .mul b (.call "exp" [u]) => some (some b, u)
+  | .bin .mul (.call "exp" [u]) b => some (some b, u)
+  | .neg inner =>
+    match matchExpScaled inner with
+    | some (none, u) => some (some (.lit (-1)), u)
+    | some (some b, u) => some (some (.neg b), u)
+    | none => none
+  | _ => none
+
+private def matchLogisticDen : Expr → Option (Expr × Option Expr × Expr)
+  | .bin .add l r =>
+    match matchExpScaled r with
+    | some (b?, u) => some (l, b?, u)
+    | none =>
+      match matchExpScaled l with
+      | some (b?, u) => some (r, b?, u)
+      | none => none
+  | .bin .sub l r =>
+    match matchExpScaled r with
+    | some (none, u) => some (l, some (.lit (-1)), u)
+    | some (some b, u) => some (l, some (.neg b), u)
+    | none =>
+      match matchExpScaled l with
+      | some (b?, u) => some (.neg r, b?, u)
+      | none => none
+  | _ => none
 
 /-- Evaluate an `Expr` in an `Env`, returning the computed `CalcVal` and updated `Env`. -/
 partial def evalExpr (env : Env) : Expr → Except String (CalcVal × Env)
@@ -381,6 +484,81 @@ partial def evalExpr (env : Env) : Expr → Except String (CalcVal × Env)
       lastVal := v
       curEnv := nextEnv
     return (lastVal, curEnv)
+  | .bin .div l r => do
+    -- Safe logistic division: handle `num / (a + b * exp(u))` and `num / (a + b * exp(u))^k`
+    -- when `u` is infinite (`u < 0` => `exp(u)` super-exponentially infinitesimal,
+    -- `u > 0` => `exp(u)` super-exponentially infinite), while keeping standalone `exp(H)` an error.
+    let logisticHandled : Option (CalcVal × Env) ←
+      match matchLogisticDen r with
+      | some (aExpr, bExpr?, uExpr) =>
+        let (lv, env1) ← evalExpr env l
+        let ln ← expectNum lv
+        let (uv, env2) ← evalExpr env1 uExpr
+        let un ← expectNum uv
+        if un.isInfinite then
+          let (av, env3) ← evalExpr env2 aExpr
+          let an ← expectNum av
+          let (bn, env4) ←
+            match bExpr? with
+            | some bExpr =>
+              let (bv, e4) ← evalExpr env3 bExpr
+              pure (← expectNum bv, e4)
+            | none => pure ((1 : FastLC), env3)
+          if bn.isZero then
+            let q ← FastLC.divNewton ln an env4.order
+            pure (some (.num q, env4))
+          else if un.signum < 0 then
+            let q ← FastLC.divNewton ln an env4.order
+            pure (some (.num q, env4))
+          else
+            pure (some (.num 0, env4))
+        else
+          pure none
+      | none =>
+        match r with
+        | .bin .pow baseE expE =>
+          match matchLogisticDen baseE with
+          | some (aExpr, bExpr?, uExpr) =>
+            let (lv, env1) ← evalExpr env l
+            let ln ← expectNum lv
+            let (uv, env2) ← evalExpr env1 uExpr
+            let un ← expectNum uv
+            if un.isInfinite then
+              let (av, env3) ← evalExpr env2 aExpr
+              let an ← expectNum av
+              let (bn, env4) ←
+                match bExpr? with
+                | some bExpr =>
+                  let (bv, e4) ← evalExpr env3 bExpr
+                  pure (← expectNum bv, e4)
+                | none => pure ((1 : FastLC), env3)
+              let (ev, env5) ← evalExpr env4 expE
+              let en ← expectNum ev
+              match en.stdPart with
+              | some expRat =>
+                if en == FastLC.ofRat expRat && expRat > 0 && !bn.isZero then
+                  if un.signum < 0 then
+                    let ak ← FastLC.powRatOrder an expRat env5.order
+                    let q ← FastLC.divNewton ln ak env5.order
+                    pure (some (.num q, env5))
+                  else
+                    pure (some (.num 0, env5))
+                else
+                  pure none
+              | none => pure none
+            else
+              pure none
+          | none => pure none
+        | _ => pure none
+    match logisticHandled with
+    | some res => return res
+    | none =>
+      let (lv, env1) ← evalExpr env l
+      let (rv, env2) ← evalExpr env1 r
+      let ln ← expectNum lv
+      let rn ← expectNum rv
+      let q ← FastLC.divNewton ln rn env2.order
+      return (.num q, env2)
   | .bin op l r => do
     let (lv, env1) ← evalExpr env l
     let (rv, env2) ← evalExpr env1 r
@@ -534,63 +712,407 @@ private def escapeJsonStr (s : String) : String :=
     | c :: rest => go (acc.push c) rest
   go "" s.toList
 
+mutual
+  private def hasFreeVarAux (v : String) (bound : List String) (e : Expr) : Bool :=
+    match e with
+    | .lit _ => false
+    | .var name => name == v && !(bound.contains name)
+    | .neg inner => hasFreeVarAux v bound inner
+    | .bin _ l r => hasFreeVarAux v bound l || hasFreeVarAux v bound r
+    | .assign _ rhs => hasFreeVarAux v bound rhs
+    | .fnDef _ param body => hasFreeVarAux v (param :: bound) body
+    | .call "diff" [body, .var param, atExpr] =>
+      hasFreeVarAux v (param :: bound) body || hasFreeVarAux v bound atExpr
+    | .call _ args => hasFreeVarList v bound args
+    | .seq stmts => hasFreeVarSeq v bound stmts
+  termination_by sizeOf e
+
+  private def hasFreeVarList (v : String) (bound : List String) (es : List Expr) : Bool :=
+    match es with
+    | [] => false
+    | e :: rest => hasFreeVarAux v bound e || hasFreeVarList v bound rest
+  termination_by sizeOf es
+
+  private def hasFreeVarSeq (v : String) (bound : List String) (stmts : List Expr) : Bool :=
+    match stmts with
+    | [] => false
+    | s :: rest =>
+      match s with
+      | .assign name rhs => hasFreeVarAux v bound rhs || hasFreeVarSeq v (name :: bound) rest
+      | .fnDef _ param body => hasFreeVarAux v (param :: bound) body || hasFreeVarSeq v bound rest
+      | other => hasFreeVarAux v bound other || hasFreeVarSeq v bound rest
+  termination_by sizeOf stmts
+end
+
+/-- Check whether `v` appears as a free variable in `e`, respecting binders (`assign`, `fnDef`,
+    `diff` parameter, and sequential `seq` bindings). -/
+def hasFreeVar (e : Expr) (v : String := "x") : Bool :=
+  hasFreeVarAux v [] e
+
+private structure FloatEnv where
+  vars : Std.HashMap String Float
+  fns : Std.HashMap String (String × Expr)
+  bigN : Float
+
+private def defaultFloatEnv (bigN : Float) (xVal : Float) : FloatEnv :=
+  let effN := if bigN > 0.0 then bigN else 100.0
+  let m : Std.HashMap String Float := Std.HashMap.emptyWithCapacity
+    |>.insert "H" effN
+    |>.insert "h" effN
+    |>.insert "ε" (1.0 / effN)
+    |>.insert "eps" (1.0 / effN)
+    |>.insert "d" (1.0 / effN)
+    |>.insert "pi" 3.141592653589793
+    |>.insert "π" 3.141592653589793
+    |>.insert "e" 2.718281828459045
+    |>.insert "x" xVal
+  { vars := m, fns := Std.HashMap.emptyWithCapacity, bigN := effN }
+
+private def isFiniteFloat (f : Float) : Bool :=
+  !f.isNaN && !f.isInf
+
+private partial def evalExprFloatAux (fEnv : FloatEnv) : Expr → Option (Float × FloatEnv)
+  | .lit v => some (v.evalFinite fEnv.bigN, fEnv)
+  | .var name =>
+    match fEnv.vars.get? name with
+    | some v => some (v, fEnv)
+    | none => none
+  | .neg inner => do
+    let (v, env1) ← evalExprFloatAux fEnv inner
+    return (-v, env1)
+  | .assign name rhs => do
+    let (v, env1) ← evalExprFloatAux fEnv rhs
+    return (v, { env1 with vars := env1.vars.insert name v })
+  | .fnDef name param body =>
+    some (0.0, { fEnv with fns := fEnv.fns.insert name (param, body) })
+  | .seq stmts => do
+    let mut curEnv := fEnv
+    let mut lastVal := 0.0
+    for s in stmts do
+      let (v, nextEnv) ← evalExprFloatAux curEnv s
+      lastVal := v
+      curEnv := nextEnv
+    return (lastVal, curEnv)
+  | .bin .div l r => do
+    -- Overflow-safe IEEE-754 logistic division: handles `u > 700` without `Inf / Inf = NaN`
+    let logisticRes : Option (Float × FloatEnv) :=
+      match matchLogisticDen r with
+      | some (aExpr, bExpr?, uExpr) => do
+        let (lv, env1) ← evalExprFloatAux fEnv l
+        let (uv, env2) ← evalExprFloatAux env1 uExpr
+        if uv > 700.0 then
+          let (bn, env3) ←
+            match bExpr? with
+            | some bE => evalExprFloatAux env2 bE
+            | none => some (1.0, env2)
+          if bn != 0.0 then some (0.0, env3) else none
+        else if uv < -700.0 then
+          let (av, env3) ← evalExprFloatAux env2 aExpr
+          if av == 0.0 then none else some (lv / av, env3)
+        else
+          none
+      | none => none
+    match logisticRes with
+    | some res => return res
+    | none =>
+      let (lv, env1) ← evalExprFloatAux fEnv l
+      let (rv, env2) ← evalExprFloatAux env1 r
+      if rv == 0.0 then none
+      else return (lv / rv, env2)
+  | .bin op l r => do
+    let (lv, env1) ← evalExprFloatAux fEnv l
+    let (rv, env2) ← evalExprFloatAux env1 r
+    match op with
+    | .add => return (lv + rv, env2)
+    | .sub => return (lv - rv, env2)
+    | .mul => return (lv * rv, env2)
+    | .div => if rv == 0.0 then none else return (lv / rv, env2)
+    | .pow => return (Float.pow lv rv, env2)
+    | .eq => return (if lv == rv then 1.0 else 0.0, env2)
+    | .ne => return (if lv != rv then 1.0 else 0.0, env2)
+    | .lt => return (if lv < rv then 1.0 else 0.0, env2)
+    | .le => return (if lv ≤ rv then 1.0 else 0.0, env2)
+    | .gt => return (if lv > rv then 1.0 else 0.0, env2)
+    | .ge => return (if lv ≥ rv then 1.0 else 0.0, env2)
+  | .call name args =>
+    if name == "diff" then
+      match args with
+      | [body, .var param, atExpr] => do
+        let (x0, env1) ← evalExprFloatAux fEnv atExpr
+        let h := max 1e-6 (min 1e-4 (1.0 / (env1.bigN * env1.bigN)))
+        let (y1, _) ← evalExprFloatAux { env1 with vars := env1.vars.insert param (x0 + h) } body
+        let (y0, _) ← evalExprFloatAux { env1 with vars := env1.vars.insert param (x0 - h) } body
+        return ((y1 - y0) / (2.0 * h), env1)
+      | _ => none
+    else if name == "deriv" then
+      match args with
+      | [.var fnName, atExpr] => do
+        let (x0, env1) ← evalExprFloatAux fEnv atExpr
+        let (param, body) ← env1.fns.get? fnName
+        let h := max 1e-6 (min 1e-4 (1.0 / (env1.bigN * env1.bigN)))
+        let (y1, _) ← evalExprFloatAux { env1 with vars := env1.vars.insert param (x0 + h) } body
+        let (y0, _) ← evalExprFloatAux { env1 with vars := env1.vars.insert param (x0 - h) } body
+        return ((y1 - y0) / (2.0 * h), env1)
+      | _ => none
+    else do
+      let mut curEnv := fEnv
+      let mut evalArgs : List Float := []
+      for a in args do
+        let (v, nextEnv) ← evalExprFloatAux curEnv a
+        evalArgs := evalArgs ++ [v]
+        curEnv := nextEnv
+      match name, evalArgs with
+      | "exp", [u] => return (Float.exp u, curEnv)
+      | "ln", [u] | "log", [u] => if u > 0.0 then return (Float.log u, curEnv) else none
+      | "sin", [u] => return (Float.sin u, curEnv)
+      | "cos", [u] => return (Float.cos u, curEnv)
+      | "tan", [u] => return (Float.tan u, curEnv)
+      | "sqrt", [u] => if u ≥ 0.0 then return (Float.sqrt u, curEnv) else none
+      | "abs", [u] => return (u.abs, curEnv)
+      | "sign", [u] | "signum", [u] =>
+        return (if u > 0.0 then 1.0 else if u < 0.0 then -1.0 else 0.0, curEnv)
+      | "std", [u] | "lead", [u] => return (u, curEnv)
+      | "trunc", [u, _] | "eval", [u, _] => return (u, curEnv)
+      | "step", [u] => return (StepFunction.sigmoidFloat (curEnv.bigN * u), curEnv)
+      | "dstep", [u] => return (curEnv.bigN * StepFunction.sigmoidDerivFloat (curEnv.bigN * u), curEnv)
+      | "ddstep", [u] =>
+        return (curEnv.bigN * curEnv.bigN * StepFunction.sigmoidDeriv2Float (curEnv.bigN * u), curEnv)
+      | fnName, [arg] =>
+        match curEnv.fns.get? fnName with
+        | some (param, body) =>
+          let (res, _) ← evalExprFloatAux { curEnv with vars := curEnv.vars.insert param arg } body
+          return (res, curEnv)
+        | none => none
+      | _, _ => none
+
+/-- Fast native `Float` evaluator for plotting an `Expr` at `H ↦ bigN`, `ε ↦ 1/bigN`, `x ↦ xVal`. -/
+def evalExprFloat (expr : Expr) (bigN : Float) (xVal : Float) : Option Float :=
+  match evalExprFloatAux (defaultFloatEnv bigN xVal) expr with
+  | some (y, _) => if isFiniteFloat y then some y else none
+  | none => none
+
+private def cleanFloat (x : Float) : Float :=
+  if x == 0.0 then 0.0 else x
+
+private def formatCleanNum (x : Float) : String :=
+  if isFiniteFloat x && x == x.round && x.abs < 1e12 then
+    if x < 0.0 then s!"-{(-x).toUInt64}" else s!"{x.toUInt64}"
+  else
+    s!"{cleanFloat x}"
+
+private def dedupSortedFloats (xs : List Float) (tol : Float := 1e-12) : List Float :=
+  let rec go (prev : Option Float) (acc : List Float) : List Float → List Float
+    | [] => acc.reverse
+    | x :: rest =>
+      match prev with
+      | some p =>
+        if (x - p).abs ≤ tol then go prev acc rest
+        else go (some x) (x :: acc) rest
+      | none => go (some x) (x :: acc) rest
+  go none [] xs
+
+private def yBounds (pts : Array (Float × Float)) : Float × Float :=
+  if h : pts.size = 0 then (0.0, 1.0)
+  else
+    let y0 := (pts[0]'(by omega)).2
+    let (lo, hi) := pts.foldl (init := (y0, y0)) fun (mn, mx) (_, y) =>
+      (if y < mn then y else mn, if y > mx then y else mx)
+    if (hi - lo).abs < 1e-12 then (lo - 1.0, hi + 1.0)
+    else (lo, hi)
+
+private def formatPointsJson (pts : Array (Float × Float)) : String :=
+  "[" ++ String.intercalate "," (pts.toList.map fun (x, y) => s!"[{cleanFloat x},{cleanFloat y}]") ++ "]"
+
+private def fnProbePoints : List (String × FastLC) :=
+  [ ("-1", (-1 : FastLC))
+  , ("-ε", -FastLC.infEps)
+  , ("0", (0 : FastLC))
+  , ("ε²", FastLC.mono (-2) 1)
+  , ("ε", FastLC.infEps)
+  , ("1", (1 : FastLC)) ]
+
+private def evalFnToJson (input : String) (expr : Expr) (bigN : Float) (order : Nat) : String :=
+  let effN := if bigN > 0.0 then bigN else 100.0
+  let baseEnv := defaultEnv order
+  -- A. Exact Lean 4 FastLC probes at 6 key points
+  let probeRes : List (String × Option String × String) :=
+    fnProbePoints.map fun (lbl, xLC) =>
+      let pEnv := { baseEnv with vars := baseEnv.vars.insert "x" xLC }
+      match evalExpr pEnv expr with
+      | .ok (.num v, _) =>
+        let evalN := v.evalFinite effN
+        let evalNJson := if isFiniteFloat evalN then s!"{cleanFloat evalN}" else "null"
+        let regime :=
+          if v.isZero then "zero"
+          else if v.isInfinite then "infinite"
+          else if v.isInfinitesimal then "infinitesimal"
+          else "finite"
+        let item :=
+          "{" ++
+          s!"\"x_label\":\"{escapeJsonStr lbl}\"," ++
+          "\"ok\":true," ++
+          s!"\"exact\":\"{escapeJsonStr v.pretty}\"," ++
+          s!"\"approx\":\"{escapeJsonStr v.prettyApprox}\"," ++
+          s!"\"regime\":\"{regime}\"," ++
+          s!"\"eval_finite\":{evalNJson}" ++
+          "}"
+        (lbl, some v.pretty, item)
+      | .ok (.bool b, _) =>
+        let bStr := if b then "true" else "false"
+        let item :=
+          "{" ++
+          s!"\"x_label\":\"{escapeJsonStr lbl}\"," ++
+          "\"ok\":true," ++
+          s!"\"exact\":\"{bStr}\"," ++
+          s!"\"approx\":\"{bStr}\"," ++
+          "\"regime\":\"bool\"," ++
+          "\"eval_finite\":null" ++
+          "}"
+        (lbl, some bStr, item)
+      | .error err =>
+        let item :=
+          "{" ++
+          s!"\"x_label\":\"{escapeJsonStr lbl}\"," ++
+          "\"ok\":false," ++
+          s!"\"error\":\"{escapeJsonStr err}\"" ++
+          "}"
+        (lbl, none, item)
+  let probesJson := "[" ++ String.intercalate "," (probeRes.map fun (_, _, j) => j) ++ "]"
+  let preferred := ["-1", "0", "1"].filterMap fun target =>
+    match probeRes.find? (fun (l, _, _) => l == target) with
+    | some (_, some exStr, _) => some s!"f({target}) = {exStr}"
+    | _ => none
+  let exactSummary :=
+    if preferred.length == 3 then
+      String.intercalate ",  " preferred
+    else
+      let anyOk := probeRes.filterMap fun (l, exOpt, _) =>
+        exOpt.map fun exStr => s!"f({l}) = {exStr}"
+      let picked := anyOk.take 3
+      if picked.isEmpty then "f(x)" else String.intercalate ",  " picked
+  -- B. Macro plot points in [-1, 1] (101 uniform + 61 cluster in [-10/N, 10/N], sorted & deduped)
+  let uniformXs : Array Float := (Array.range 101).map fun i =>
+    -1.0 + 2.0 * (Float.ofNat i) / 100.0
+  let clusterSpan := min 1.0 (10.0 / effN)
+  let clusterXs : Array Float := (Array.range 61).map fun i =>
+    -clusterSpan + 2.0 * clusterSpan * (Float.ofNat i) / 60.0
+  let combinedXs := (uniformXs ++ clusterXs).qsort (fun a b => a < b)
+  let macroXs := dedupSortedFloats combinedXs.toList
+  let macroPts : Array (Float × Float) := macroXs.foldl (init := #[]) fun acc x =>
+    match evalExprFloat expr effN x with
+    | some y => acc.push (x, y)
+    | none => acc
+  let (yMin, yMax) := yBounds macroPts
+  -- C. Micro transition-layer points in [-8/N, 8/N] (81 uniform)
+  let zoomHalf := 8.0 / effN
+  let zoomPts : Array (Float × Float) := (Array.range 81).foldl (init := #[]) fun acc i =>
+    let x := -zoomHalf + 2.0 * zoomHalf * (Float.ofNat i) / 80.0
+    match evalExprFloat expr effN x with
+    | some y => acc.push (x, y)
+    | none => acc
+  let (zyMin, zyMax) := yBounds zoomPts
+  let anyProbeOk := probeRes.any fun (_, exOpt, _) => exOpt.isSome
+  if !anyProbeOk && macroPts.isEmpty then
+    -- All probes failed and Float sampler produced zero points (e.g. undefined variable `foo + x`)
+    let firstErr :=
+      match evalExpr { baseEnv with vars := baseEnv.vars.insert "x" (0 : FastLC) } expr with
+      | .error e => e
+      | .ok _ => "Unable to evaluate function expression"
+    "{" ++
+    "\"ok\":false," ++
+    s!"\"input\":\"{escapeJsonStr input}\"," ++
+    s!"\"error\":\"{escapeJsonStr firstErr}\"" ++
+    "}"
+  else
+  "{" ++
+  "\"ok\":true," ++
+  "\"kind\":\"fn\"," ++
+  "\"var\":\"x\"," ++
+  s!"\"input\":\"{escapeJsonStr input}\"," ++
+  s!"\"exact\":\"{escapeJsonStr exactSummary}\"," ++
+  s!"\"approx\":\"f(x) at H ↦ {formatCleanNum effN}\"," ++
+  "\"regime\":\"function\"," ++
+  s!"\"eval_N\":{formatCleanNum effN}," ++
+  s!"\"probes\":{probesJson}," ++
+  "\"plot\":{" ++
+    "\"var\":\"x\"," ++
+    "\"x_min\":-1,\"x_max\":1," ++
+    s!"\"y_min\":{cleanFloat yMin},\"y_max\":{cleanFloat yMax}," ++
+    s!"\"points\":{formatPointsJson macroPts}," ++
+    s!"\"zoom_x_min\":{cleanFloat (-zoomHalf)},\"zoom_x_max\":{cleanFloat zoomHalf}," ++
+    s!"\"zoom_y_min\":{cleanFloat zyMin},\"zoom_y_max\":{cleanFloat zyMax}," ++
+    s!"\"zoom_points\":{formatPointsJson zoomPts}" ++
+  "}" ++
+  "}"
+
 /-- Evaluate an expression and serialize rich result metadata as JSON for the web app API. -/
 def evalToJson (input : String) (bigN : Float := 100.0) (order : Nat := 10) : String :=
-  match evalString input order with
+  match parseExpr input with
   | .error err =>
     "{" ++
     "\"ok\":false," ++
     s!"\"input\":\"{escapeJsonStr input}\"," ++
     s!"\"error\":\"{escapeJsonStr err}\"" ++
     "}"
-  | .ok (.bool b) =>
-    let bStr := if b then "true" else "false"
-    "{" ++
-    "\"ok\":true," ++
-    "\"kind\":\"bool\"," ++
-    s!"\"input\":\"{escapeJsonStr input}\"," ++
-    s!"\"exact\":\"{bStr}\"," ++
-    s!"\"approx\":\"{bStr}\"," ++
-    s!"\"value\":{bStr}" ++
-    "}"
-  | .ok (.num x) =>
-    let stdJson :=
-      match x.stdPart with
-      | some r => s!"\"{escapeJsonStr (FastLC.ofRat r).pretty}\""
-      | none => "null"
-    let leadJson :=
-      match x.leadingTerm with
-      | some (e, c) =>
-        s!"\"{escapeJsonStr (FastLC.mono e c).pretty}\""
-      | none => "\"0\""
-    let termsJson := x.terms.map fun (e, c) =>
-      "{" ++
-      s!"\"exp\":\"{escapeJsonStr (toString e)}\"," ++
-      s!"\"exp_f\":{FastLC.ratToFloat e}," ++
-      s!"\"coeff\":\"{escapeJsonStr (toString c)}\"," ++
-      s!"\"coeff_f\":{FastLC.ratToFloat c}" ++
-      "}"
-    let evalN := x.evalFinite bigN
-    let evalNJson := if evalN.isNaN || evalN.isInf then "null" else s!"{evalN}"
-    let kindTag :=
-      if x.isZero then "zero"
-      else if x.isInfinite then "infinite"
-      else if x.isInfinitesimal then "infinitesimal"
-      else "finite"
-    "{" ++
-    "\"ok\":true," ++
-    "\"kind\":\"num\"," ++
-    s!"\"input\":\"{escapeJsonStr input}\"," ++
-    s!"\"exact\":\"{escapeJsonStr x.pretty}\"," ++
-    s!"\"approx\":\"{escapeJsonStr x.prettyApprox}\"," ++
-    s!"\"regime\":\"{kindTag}\"," ++
-    s!"\"sign\":{x.signum}," ++
-    s!"\"dominant\":{leadJson}," ++
-    s!"\"std_part\":{stdJson}," ++
-    s!"\"term_count\":{x.terms.length}," ++
-    s!"\"eval_N\":{bigN}," ++
-    s!"\"eval_finite\":{evalNJson}," ++
-    "\"terms\":[" ++ String.intercalate "," termsJson ++ "]" ++
-    "}"
+  | .ok expr =>
+    if hasFreeVar expr "x" then
+      evalFnToJson input expr bigN order
+    else
+      match evalExpr (defaultEnv order) expr with
+      | .error err =>
+        "{" ++
+        "\"ok\":false," ++
+        s!"\"input\":\"{escapeJsonStr input}\"," ++
+        s!"\"error\":\"{escapeJsonStr err}\"" ++
+        "}"
+      | .ok (.bool b, _) =>
+        let bStr := if b then "true" else "false"
+        "{" ++
+        "\"ok\":true," ++
+        "\"kind\":\"bool\"," ++
+        s!"\"input\":\"{escapeJsonStr input}\"," ++
+        s!"\"exact\":\"{bStr}\"," ++
+        s!"\"approx\":\"{bStr}\"," ++
+        s!"\"value\":{bStr}" ++
+        "}"
+      | .ok (.num x, _) =>
+        let stdJson :=
+          match x.stdPart with
+          | some r => s!"\"{escapeJsonStr (FastLC.ofRat r).pretty}\""
+          | none => "null"
+        let leadJson :=
+          match x.leadingTerm with
+          | some (e, c) =>
+            s!"\"{escapeJsonStr (FastLC.mono e c).pretty}\""
+          | none => "\"0\""
+        let termsJson := x.terms.map fun (e, c) =>
+          "{" ++
+          s!"\"exp\":\"{escapeJsonStr (toString e)}\"," ++
+          s!"\"exp_f\":{FastLC.ratToFloat e}," ++
+          s!"\"coeff\":\"{escapeJsonStr (toString c)}\"," ++
+          s!"\"coeff_f\":{FastLC.ratToFloat c}" ++
+          "}"
+        let evalN := x.evalFinite bigN
+        let evalNJson := if evalN.isNaN || evalN.isInf then "null" else s!"{evalN}"
+        let kindTag :=
+          if x.isZero then "zero"
+          else if x.isInfinite then "infinite"
+          else if x.isInfinitesimal then "infinitesimal"
+          else "finite"
+        "{" ++
+        "\"ok\":true," ++
+        "\"kind\":\"num\"," ++
+        s!"\"input\":\"{escapeJsonStr input}\"," ++
+        s!"\"exact\":\"{escapeJsonStr x.pretty}\"," ++
+        s!"\"approx\":\"{escapeJsonStr x.prettyApprox}\"," ++
+        s!"\"regime\":\"{kindTag}\"," ++
+        s!"\"sign\":{x.signum}," ++
+        s!"\"dominant\":{leadJson}," ++
+        s!"\"std_part\":{stdJson}," ++
+        s!"\"term_count\":{x.terms.length}," ++
+        s!"\"eval_N\":{bigN}," ++
+        s!"\"eval_finite\":{evalNJson}," ++
+        "\"terms\":[" ++ String.intercalate "," termsJson ++ "]" ++
+        "}"
 
 end LeanInf.Calc

@@ -259,6 +259,73 @@ def runAllTests : Array TestResult := Id.run do
   | .error e =>
     r := r.push (check g4 "Hyperfinite Riemann integral" false e)
 
+  -- Group 5: Glued Math Implicit Mul, Safe Logistic Div & Free-Variable `x` Function Plotting
+  let g5 := "Glued Tokens & Function Plot (`x`)"
+  r := r.push (checkEvalEq g5 "Hε" "1" 10)
+  r := r.push (checkEvalEq g5 "Heps" "1" 10)
+  r := r.push (checkEvalEq g5 "1/(1+exp(-H))" "1" 10)
+  r := r.push (checkEvalEq g5 "1/(1+exp(H))" "0" 10)
+  r := r.push (checkEvalEq g5 "1/(1+exp(-H*0))" "1/2" 10)
+  r := r.push (checkEvalEq g5 "hx = 5; hx + 1" "6" 10)
+  r := r.push (checkEvalEq g5 "hx(t) = t^2; hx(3)" "9" 10)
+
+  -- Glued `Hx`, `xH`, `εx`, `xeps`, `hx` parse with free variable `x`
+  for exprStr in ["1/(1+exp(-Hx))", "1/(1+exp(-H*x))", "-Hx", "xH", "εx", "xeps", "hx",
+                  "dstep(x)", "x^2 + eps", "1/(1+exp(-H*(x-0.5)))"] do
+    match Calc.parseExpr exprStr with
+    | .ok e =>
+      r := r.push (check g5 s!"hasFreeVar '{exprStr}' == true" (Calc.hasFreeVar e "x") s!"expr={repr e}")
+    | .error err =>
+      r := r.push (check g5 s!"parse '{exprStr}'" false err)
+
+  -- Bound `x` in `diff` and `fnDef` must remain scalar (`hasFreeVar == false`, `kind: "num"`)
+  for scalarStr in ["diff(x^4, x, 2)", "f(x) = x^2; f(3)", "x = 3; x + 1"] do
+    match Calc.parseExpr scalarStr with
+    | .ok e =>
+      let j := Calc.evalToJson scalarStr 100.0 10
+      let isScalar := !(Calc.hasFreeVar e "x") && (j.splitOn "\"kind\":\"num\"").length ≥ 2
+      r := r.push (check g5 s!"bound x stays scalar kind=\"num\": {scalarStr}" isScalar j)
+    | .error err =>
+      r := r.push (check g5 s!"parse scalar '{scalarStr}'" false err)
+
+  -- Full end-to-end check of `1/(1+exp(-Hx))` probes & Float step plot
+  let logJson100 := Calc.evalToJson "1/(1+exp(-Hx))" 100.0 10
+  let logJson1000 := Calc.evalToJson "1/(1+exp(-Hx))" 1000.0 10
+  r := r.push (check g5 "1/(1+exp(-Hx)) JSON returns kind=\"fn\" with probes & plot"
+    ((logJson100.splitOn "\"kind\":\"fn\"").length ≥ 2 &&
+     (logJson100.splitOn "\"exact\":\"f(-1) = 0,  f(0) = 1/2,  f(1) = 1\"").length ≥ 2 &&
+     (logJson100.splitOn "\"x_label\":\"ε²\",\"ok\":true,\"exact\":\"1/2 + (1/4)ε - (1/48)ε³").length ≥ 2 &&
+     (logJson100.splitOn "\"zoom_points\":[").length ≥ 2 &&
+     (logJson100.splitOn "NaN").length == 1 &&
+     (logJson1000.splitOn "NaN").length == 1)
+    logJson100)
+
+  -- Verify Float sampler produces exact step shape on `1/(1+exp(-Hx))` at N = 100 and N = 1000
+  match Calc.parseExpr "1/(1+exp(-Hx))" with
+  | .ok logExpr =>
+    match Calc.evalExprFloat logExpr 100.0 (-1.0),
+          Calc.evalExprFloat logExpr 100.0 0.0,
+          Calc.evalExprFloat logExpr 100.0 1.0,
+          Calc.evalExprFloat logExpr 1000.0 (-1.0),
+          Calc.evalExprFloat logExpr 1000.0 1.0 with
+    | some yL, some yM, some yR, some yL1k, some yR1k =>
+      r := r.push (check g5 "1/(1+exp(-Hx)) Float sampler step shape at N=100 & N=1000 (zero NaN)"
+        (yL < 1e-6 && (yM - 0.5).abs < 1e-12 && yR > 1.0 - 1e-6 &&
+         yL1k < 1e-6 && yR1k > 1.0 - 1e-6)
+        s!"N=100: ({yL},{yM},{yR}), N=1000: ({yL1k},{yR1k})")
+    | _, _, _, _, _ =>
+      r := r.push (check g5 "1/(1+exp(-Hx)) Float sampler step shape" false "returned none")
+  | .error err =>
+    r := r.push (check g5 "parse 1/(1+exp(-Hx))" false err)
+
+  -- Verify `1/(1+exp(-H*x))`, `dstep(x)`, `x^2 + eps`, `1/(1+exp(-H*(x-0.5)))` emit valid kind="fn"
+  for fnExpr in ["1/(1+exp(-H*x))", "dstep(x)", "x^2 + eps", "1/(1+exp(-H*(x-0.5)))"] do
+    let j := Calc.evalToJson fnExpr 100.0 10
+    let ok := (j.splitOn "\"kind\":\"fn\"").length ≥ 2 &&
+              (j.splitOn "\"points\":[[").length ≥ 2 &&
+              (j.splitOn "NaN").length == 1
+    r := r.push (check g5 s!"kind=\"fn\" with valid plot points: {fnExpr}" ok)
+
   return r
 
 /-- Print a formatted test report and return `true` iff every test passed. -/
