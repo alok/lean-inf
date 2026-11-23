@@ -10,8 +10,34 @@
  *   PORT=4420 bun run server/server.ts
  */
 
+import { timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+
+/** Load key=value pairs from server/.env without overriding explicit env vars or logging secrets. */
+function loadDotEnv(envPath: string): void {
+  if (!existsSync(envPath)) return;
+  const content = readFileSync(envPath, "utf8");
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim();
+    let val = line.slice(eq + 1).trim();
+    if (
+      (val.startsWith("\"") && val.endsWith("\"")) ||
+      (val.startsWith("'") && val.endsWith("'"))
+    ) {
+      val = val.slice(1, -1);
+    }
+    if (!process.env[key]) {
+      process.env[key] = val;
+    }
+  }
+}
+
+loadDotEnv(join(import.meta.dir, ".env"));
 
 const PORT = Number(process.env.PORT ?? "4420");
 const HOST = process.env.HOST ?? "127.0.0.1";
@@ -21,6 +47,283 @@ const BLOG_INF_DIR = resolve(process.env.HOME ?? "", "blog", "inf");
 const BLOG_UI_PATH = join(BLOG_INF_DIR, "index.html");
 const CODE_SHOTS_DIR = join(BLOG_INF_DIR, "code-shots");
 const BENCH_CACHE_PATH = join(REPO_ROOT, "plots", "bench_results.json");
+const OCR_MAX_BODY_BYTES = 2 * 1024 * 1024;
+const OCR_RATE_LIMIT_MAX = 30;
+const OCR_RATE_LIMIT_WINDOW_MS = 60_000;
+const ocrRequestTimestamps: number[] = [];
+
+const OCR_SYSTEM_PROMPT = `You are a high-precision mathematical handwriting OCR engine for the lean-inf Levi-Civita calculator (nonstandard analysis / infinitesimals & infinities in Lean 4).
+Your job is to transcribe the handwritten mathematical expression in the image into a single valid ASCII lean-inf calculator expression.
+
+STRICT GRAMMAR (LeanInf/Parser.lean):
+- Constants:
+  - H : infinite unit (map handwritten ∞, ω, H to H)
+  - eps : infinitesimal 1/H (map handwritten ε, ϵ, dx, eps to eps)
+  - pi : 3.14159... (map π to pi)
+  - e : Euler's number
+- Operators: +  -  *  /  ^  unary -  parentheses (...)  comparisons == != < <= > >=  statements separated by ;  assignments a = expr  function defs f(x) = body
+- Built-in functions:
+  sin, cos, tan, exp, ln, log, sqrt, abs, std, sign, signum, lead, order,
+  coeff(x, e), trunc(x, n), eval(x, N),
+  diff(expr, var, point), deriv(fnName, point),
+  step(x), dstep(x), ddstep(x),
+  isinf, isfinite, isinfsm
+
+MANDATORY REWRITE RULES:
+1. Stacked fractions: write (numerator)/(denominator).
+2. Exponents MUST use ASCII ^ with parentheses around negative or compound exponents: e.g. (1 + eps)^(-1), H^(1/2), eps^3, (1 + eps)^(1/eps). NEVER output Unicode superscripts or LaTeX.
+3. ALWAYS write explicit * between adjacent identifiers (e.g. H*eps, NOT Heps or Hε).
+4. Radicals: sqrt(A) for square root, (A)^(1/n) for nth root.
+5. Derivatives at a point: d/dx (E) |_{x=a} -> diff(E, x, a); f(x) = E; f'(a) -> f(x) = E; deriv(f, a).
+6. Nonstandard step / Dirac delta: L_H(x), Θ(x), u(x), step(x) -> step(x); δ(x), L'_H(x), dstep(x) -> dstep(x); δ'(x), L''_H(x), ddstep(x) -> ddstep(x).
+7. Exponential notation e^(...) -> exp(...) when exponent is compound (or e^(...)).
+8. Output ONLY valid JSON matching the schema: { "expr": "...", "confidence": 0.0-1.0, "note": "" }. Never include LaTeX commands, dollar signs, backticks, or prose inside expr.`;
+
+const SUPERSCRIPT_MAP: Record<string, string> = {
+  "⁰": "0",
+  "¹": "1",
+  "²": "2",
+  "³": "3",
+  "⁴": "4",
+  "⁵": "5",
+  "⁶": "6",
+  "⁷": "7",
+  "⁸": "8",
+  "⁹": "9",
+  "⁺": "+",
+  "⁻": "-",
+  "⁽": "(",
+  "⁾": ")",
+};
+
+function sanitizeLeanInfExpr(raw: string): string {
+  let s = raw.trim();
+  // Strip accidental markdown fences, backticks, and LaTeX math delimiters
+  s = s.replace(/^```[a-zA-Z]*\s*/g, "").replace(/\s*```$/g, "");
+  s = s.replace(/`/g, "");
+  s = s.replace(/^\$\$|\$\$$/g, "").replace(/^\$|\$$/g, "");
+  s = s.replace(/^\\\(|\\\)$/g, "").replace(/^\\\[|\\\]$/g, "");
+
+  // Common LaTeX fallbacks if Gemini ever leaks LaTeX
+  s = s.replace(/\\frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}/g, "(($1)/($2))");
+  s = s.replace(/\\sqrt\s*\{([^{}]+)\}/g, "sqrt($1)");
+  s = s.replace(/\\(?:cdot|times)/g, "*");
+  s = s.replace(/\\(?:varepsilon|epsilon)/g, "eps");
+  s = s.replace(/\\infty/g, "H");
+  s = s.replace(/\\pi/g, "pi");
+  s = s.replace(/\\left|\\right/g, "");
+
+  // Separate adjacent identifier + Greek epsilon before replacing epsilon -> eps
+  s = s.replace(/([A-Za-z])([εϵɛ])/g, "$1*eps");
+  s = s.replace(/([εϵɛ])([A-Za-z])/g, "eps*$2");
+
+  // Unicode symbol normalization
+  s = s
+    .replace(/[−–—‒]/g, "-")
+    .replace(/[×·⋅∙]/g, "*")
+    .replace(/[÷⁄∕]/g, "/")
+    .replace(/≤/g, "<=")
+    .replace(/≥/g, ">=")
+    .replace(/≠/g, "!=")
+    .replace(/[∞ω]/g, "H")
+    .replace(/[εϵɛ]/g, "eps")
+    .replace(/π/g, "pi")
+    .replace(/（/g, "(")
+    .replace(/）/g, ")")
+    .replace(/［/g, "[")
+    .replace(/］/g, "]");
+
+  // Radicals
+  s = s.replace(/√\s*\(([^()]+)\)/g, "sqrt($1)");
+  s = s.replace(/√\s*([A-Za-z0-9_.]+)/g, "sqrt($1)");
+
+  // Superscript runs: e.g. x² -> x^2, (1+eps)⁻¹ -> (1+eps)^(-1)
+  s = s.replace(/([⁺⁻⁰¹²³⁴⁵⁶⁷⁸⁹⁽⁾]+)/g, (run) => {
+    const mapped = Array.from(run)
+      .map((ch) => SUPERSCRIPT_MAP[ch] ?? ch)
+      .join("");
+    if (mapped.startsWith("(") && mapped.endsWith(")")) {
+      return `^${mapped}`;
+    }
+    if (mapped.includes("-") || mapped.includes("+")) {
+      return `^(${mapped})`;
+    }
+    return `^${mapped}`;
+  });
+
+  // Catch accidental concatenation of H and eps
+  s = s.replace(/\bHeps\b/g, "H*eps");
+  s = s.replace(/\bepsH\b/g, "eps*H");
+
+  // Collapse whitespace
+  s = s.replace(/\s+/g, " ").trim();
+  return s;
+}
+
+function verifyInfPadToken(provided: string | null): boolean {
+  const expected = process.env.INFPAD_OCR_TOKEN ?? "";
+  if (!expected || !provided) return false;
+  const a = Buffer.from(provided, "utf8");
+  const b = Buffer.from(expected, "utf8");
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+function checkOcrRateLimit(): boolean {
+  const now = Date.now();
+  while (ocrRequestTimestamps.length > 0 && now - ocrRequestTimestamps[0] > OCR_RATE_LIMIT_WINDOW_MS) {
+    ocrRequestTimestamps.shift();
+  }
+  if (ocrRequestTimestamps.length >= OCR_RATE_LIMIT_MAX) {
+    return false;
+  }
+  ocrRequestTimestamps.push(now);
+  return true;
+}
+
+interface GeminiOcrResult {
+  expr: string;
+  confidence: number;
+  note: string;
+  model: string;
+  ocrMs: number;
+}
+
+async function callGeminiVisionOcr(imageBase64: string, mimeType: string): Promise<GeminiOcrResult> {
+  const apiKey = process.env.GEMINI_API_KEY ?? "";
+  if (!apiKey) {
+    throw new Error("Server OCR is not configured (missing GEMINI_API_KEY in server/.env)");
+  }
+
+  const primaryModel = (process.env.GEMINI_OCR_MODEL ?? "gemini-flash-lite-latest").trim() || "gemini-flash-lite-latest";
+  const candidateModels = [
+    primaryModel,
+    "gemini-flash-lite-latest",
+    "gemini-3.5-flash-lite",
+    "gemini-flash-latest",
+    "gemini-2.5-flash",
+  ];
+  const modelsToTry = Array.from(new Set(candidateModels));
+
+  const cleanBase64 = imageBase64.replace(/^data:[^;]+;base64,/, "").replace(/\s+/g, "");
+  let lastErr = "Gemini OCR request failed";
+
+  for (const model of modelsToTry) {
+    const t0 = performance.now();
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+
+    const buildBody = (includeMinimalThinking: boolean) => ({
+      system_instruction: {
+        parts: [{ text: OCR_SYSTEM_PROMPT }],
+      },
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              text: "Transcribe the handwritten mathematical expression in this image into a single valid ASCII lean-inf calculator expression.",
+            },
+            {
+              inline_data: {
+                mime_type: mimeType,
+                data: cleanBase64,
+              },
+            },
+          ],
+        },
+      ],
+      generationConfig: {
+        temperature: 0.0,
+        maxOutputTokens: 256,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: "OBJECT",
+          properties: {
+            expr: { type: "STRING" },
+            confidence: { type: "NUMBER" },
+            note: { type: "STRING" },
+          },
+          required: ["expr", "confidence", "note"],
+        },
+        ...(includeMinimalThinking ? { thinkingConfig: { thinkingLevel: "minimal" } } : {}),
+      },
+    });
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": apiKey,
+        },
+        signal: AbortSignal.timeout(9000),
+        body: JSON.stringify(buildBody(true)),
+      });
+
+      if (res.status === 400) {
+        const errPreview = await res.text();
+        if (/thinking/i.test(errPreview)) {
+          res = await fetch(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-goog-api-key": apiKey,
+            },
+            signal: AbortSignal.timeout(9000),
+            body: JSON.stringify(buildBody(false)),
+          });
+        } else {
+          lastErr = `Gemini API (${model}) HTTP 400: ${errPreview.slice(0, 240)}`;
+          continue;
+        }
+      }
+    } catch (err) {
+      lastErr = `Gemini API (${model}) network/timeout error: ${err instanceof Error ? err.message : String(err)}`;
+      continue;
+    }
+
+    if (!res.ok) {
+      const errText = await res.text();
+      lastErr = `Gemini API (${model}) HTTP ${res.status}: ${errText.slice(0, 240)}`;
+      if (res.status === 404 || res.status === 429 || res.status >= 500) {
+        continue;
+      }
+      throw new Error(lastErr);
+    }
+
+    const data = (await res.json()) as {
+      candidates?: Array<{
+        content?: { parts?: Array<{ text?: string }> };
+      }>;
+    };
+    const ocrMs = Math.round((performance.now() - t0) * 100) / 100;
+    const rawText = data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("").trim() ?? "";
+    if (!rawText) {
+      lastErr = `Gemini API (${model}) returned empty content`;
+      continue;
+    }
+
+    let expr = rawText;
+    let confidence = 0.9;
+    let note = "";
+    try {
+      const parsed = JSON.parse(rawText) as { expr?: unknown; confidence?: unknown; note?: unknown };
+      expr = typeof parsed.expr === "string" ? parsed.expr : "";
+      confidence = typeof parsed.confidence === "number" && Number.isFinite(parsed.confidence)
+        ? Math.max(0, Math.min(1, parsed.confidence))
+        : 0.9;
+      note = typeof parsed.note === "string" ? parsed.note : "";
+    } catch {
+      expr = rawText;
+      note = "Fallback non-JSON parse";
+    }
+
+    return { expr, confidence, note, model, ocrMs };
+  }
+
+  throw new Error(lastErr);
+}
 
 const startedAt = Date.now();
 
@@ -88,7 +391,7 @@ function corsHeaders(extra: Record<string, string> = {}): Record<string, string>
   return {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Headers": "Content-Type, X-InfPad-Token",
     ...extra,
   };
 }
@@ -125,8 +428,144 @@ const server = Bun.serve({
         return jsonResponse(
           JSON.stringify({
             ...parsed,
+            ocrConfigured: Boolean(process.env.GEMINI_API_KEY && process.env.INFPAD_OCR_TOKEN),
             uptimeMs: Date.now() - startedAt,
             pingMs: Math.round((performance.now() - t0) * 100) / 100,
+          }),
+        );
+      }
+
+      if (path === "/ocr-eval" && req.method === "POST") {
+        if (!verifyInfPadToken(req.headers.get("x-infpad-token"))) {
+          return jsonResponse(
+            JSON.stringify({ ok: false, error: "Unauthorized: invalid or missing X-InfPad-Token" }),
+            401,
+          );
+        }
+
+        if (!checkOcrRateLimit()) {
+          return jsonResponse(
+            JSON.stringify({ ok: false, error: "Rate limit exceeded (max 30 OCR requests/minute)" }),
+            429,
+          );
+        }
+
+        const contentLengthHeader = req.headers.get("content-length");
+        if (contentLengthHeader && Number(contentLengthHeader) > OCR_MAX_BODY_BYTES) {
+          return jsonResponse(
+            JSON.stringify({ ok: false, error: "Payload too large (max 2 MB)" }),
+            413,
+          );
+        }
+
+        const rawBody = await req.text();
+        if (Buffer.byteLength(rawBody, "utf8") > OCR_MAX_BODY_BYTES) {
+          return jsonResponse(
+            JSON.stringify({ ok: false, error: "Payload too large (max 2 MB)" }),
+            413,
+          );
+        }
+
+        let payload: {
+          imageBase64?: unknown;
+          mimeType?: unknown;
+          N?: unknown;
+          order?: unknown;
+        };
+        try {
+          payload = JSON.parse(rawBody);
+        } catch {
+          return jsonResponse(JSON.stringify({ ok: false, error: "Invalid JSON body" }), 400);
+        }
+
+        const imageBase64 = typeof payload.imageBase64 === "string" ? payload.imageBase64.trim() : "";
+        if (!imageBase64) {
+          return jsonResponse(JSON.stringify({ ok: false, error: "Missing imageBase64" }), 400);
+        }
+
+        const mimeTypeRaw = typeof payload.mimeType === "string" ? payload.mimeType.trim() : "image/png";
+        const allowedMimes = new Set(["image/png", "image/jpeg", "image/webp"]);
+        const mimeType = allowedMimes.has(mimeTypeRaw) ? mimeTypeRaw : "image/png";
+
+        let bigN = Number(payload.N ?? 100);
+        let order = Number(payload.order ?? 10);
+        if (!Number.isFinite(bigN) || bigN <= 0) bigN = 100;
+        if (!Number.isFinite(order)) order = 10;
+        order = Math.max(4, Math.min(24, Math.round(order)));
+
+        const ocr = await callGeminiVisionOcr(imageBase64, mimeType);
+        const recognizedExpr = ocr.expr.trim();
+        const normalizedExpr = sanitizeLeanInfExpr(recognizedExpr);
+
+        if (!normalizedExpr) {
+          return jsonResponse(
+            JSON.stringify({
+              ok: false,
+              error: "No mathematical expression recognized in ink image",
+              recognizedExpr,
+              normalizedExpr: "",
+              confidence: ocr.confidence,
+              note: ocr.note,
+              model: ocr.model,
+              ocrMs: ocr.ocrMs,
+              serverMs: 0,
+              ocr: {
+                expr: "",
+                rawExpr: recognizedExpr,
+                confidence: ocr.confidence,
+                note: ocr.note,
+                model: ocr.model,
+                ocrMs: ocr.ocrMs,
+              },
+              eval: {
+                ok: false,
+                input: "",
+                error: "No mathematical expression recognized",
+                engine: "lean4",
+                serverMs: 0,
+              },
+            }),
+          );
+        }
+
+        if (normalizedExpr.length > 500) {
+          return jsonResponse(
+            JSON.stringify({
+              ok: false,
+              error: "Recognized expression too long (max 500 chars)",
+              recognizedExpr,
+              normalizedExpr: normalizedExpr.slice(0, 500),
+              ocrMs: ocr.ocrMs,
+              serverMs: 0,
+            }),
+            400,
+          );
+        }
+
+        const tEval0 = performance.now();
+        const rawEval = await worker.request(`eval\t${bigN}\t${order}\t${normalizedExpr}`);
+        const serverMs = Math.round((performance.now() - tEval0) * 100) / 100;
+        const evalPayload = { ...JSON.parse(rawEval), engine: "lean4", serverMs };
+
+        return jsonResponse(
+          JSON.stringify({
+            ok: Boolean(evalPayload.ok),
+            recognizedExpr,
+            normalizedExpr,
+            confidence: ocr.confidence,
+            note: ocr.note,
+            model: ocr.model,
+            ocrMs: ocr.ocrMs,
+            serverMs,
+            ocr: {
+              expr: normalizedExpr,
+              rawExpr: recognizedExpr,
+              confidence: ocr.confidence,
+              note: ocr.note,
+              model: ocr.model,
+              ocrMs: ocr.ocrMs,
+            },
+            eval: evalPayload,
           }),
         );
       }

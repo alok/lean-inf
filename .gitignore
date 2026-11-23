@@ -1,3 +1,9 @@
 /.lake
 float-proofs/.lake
 *.pdf
+server/.env
+server/server.log
+ios/InfPad/Secrets.xcconfig
+ios/InfPad/build/
+ios/InfPad/InfPad.xcodeproj/
+
