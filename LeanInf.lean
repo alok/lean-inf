@@ -7,6 +7,8 @@ import LeanInf.SortedLC
 import LeanInf.Karatsuba
 import LeanInf.Kronecker
 import LeanInf.VerifiedRefactor
+import LeanInf.Instances
+import LeanInf.Grind
 import LeanInf.StepFunction
 import LeanInf.Parser
 import LeanInf.TestSuite
