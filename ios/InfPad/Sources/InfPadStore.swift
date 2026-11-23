@@ -18,7 +18,7 @@ final class InfPadStore {
 
     var drawing = PKDrawing()
     var toolMode: DrawingToolMode = .pen
-    var expressionText: String = "dstep(0)"
+    var expressionText: String = "1/(1+exp(-Hx))"
     var recognizedExpr: String? = nil
     var ocrModel: String? = nil
     var ocrMs: Double? = nil
@@ -45,6 +45,7 @@ final class InfPadStore {
     let canvasController = InfCanvasController()
     private let api = InfAPIClient()
     private let historyDir: URL
+    private var sliderDebounceTask: Task<Void, Never>? = nil
 
     var theme: InfTheme { InfTheme(isDark: isDark) }
 
@@ -226,17 +227,31 @@ final class InfPadStore {
         await evaluateExpression(chip.expr, saveToHistory: true)
     }
 
+    func scheduleDebouncedPlotUpdate() {
+        guard evalResult?.isFunction == true else { return }
+        sliderDebounceTask?.cancel()
+        sliderDebounceTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled, let self else { return }
+            await self.commitSliderN()
+        }
+    }
+
     func commitSliderN() async {
+        sliderDebounceTask?.cancel()
+        sliderDebounceTask = nil
         guard let currentExpr = evalResult?.input ?? (expressionText.isEmpty ? nil : expressionText) else { return }
         guard !currentExpr.isEmpty else { return }
+        let requestedN = sliderN
         do {
             let ev = try await api.evaluate(
                 baseURL: serverURL,
                 expr: currentExpr,
-                bigN: sliderN,
+                bigN: requestedN,
                 order: order
             )
-            if ev.ok {
+            // Only apply if user hasn't switched expressions while in-flight
+            if ev.ok && (evalResult?.input == nil || evalResult?.input == currentExpr) {
                 evalResult = ev
                 leanMs = ev.serverMs
             }

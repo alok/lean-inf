@@ -88,6 +88,10 @@ struct InfTheme {
                 : (Color(red: 0.118, green: 0.251, blue: 0.686), Color(red: 0.859, green: 0.918, blue: 0.996), "FINITE")
         case "zero":
             return (secondaryInk, surfaceCard, "ZERO")
+        case "function":
+            return isDark
+                ? (Color(red: 0.369, green: 0.918, blue: 0.831), Color(red: 0.067, green: 0.369, blue: 0.349).opacity(0.45), "FUNCTION f(x)")
+                : (Color(red: 0.059, green: 0.463, blue: 0.431), Color(red: 0.800, green: 0.984, blue: 0.945), "FUNCTION f(x)")
         default:
             return (accentCobalt, accentCobalt.opacity(0.14), "RESULT")
         }

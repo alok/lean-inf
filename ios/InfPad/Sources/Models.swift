@@ -18,9 +18,47 @@ struct LCTerm: Codable, Identifiable, Equatable {
     var id: String { "\(exp):\(coeff)" }
 }
 
+struct FnProbe: Codable, Identifiable, Equatable {
+    let x_label: String
+    let ok: Bool
+    let exact: String?
+    let approx: String?
+    let regime: String?
+    let eval_finite: Double?
+    let error: String?
+
+    var id: String { x_label }
+}
+
+struct FnPlot: Codable, Equatable {
+    let varName: String?
+    let x_min: Double
+    let x_max: Double
+    let y_min: Double
+    let y_max: Double
+    let points: [[Double]]
+    let zoom_x_min: Double?
+    let zoom_x_max: Double?
+    let zoom_y_min: Double?
+    let zoom_y_max: Double?
+    let zoom_points: [[Double]]?
+
+    enum CodingKeys: String, CodingKey {
+        case varName = "var"
+        case x_min, x_max, y_min, y_max, points
+        case zoom_x_min, zoom_x_max, zoom_y_min, zoom_y_max, zoom_points
+    }
+
+    var hasZoom: Bool {
+        if let zp = zoom_points, !zp.isEmpty { return true }
+        return false
+    }
+}
+
 struct EvalResponse: Codable, Equatable {
     let ok: Bool
     let kind: String?
+    let varName: String?
     let input: String?
     let exact: String?
     let approx: String?
@@ -33,9 +71,22 @@ struct EvalResponse: Codable, Equatable {
     let eval_N: Double?
     let eval_finite: Double?
     let terms: [LCTerm]?
+    let probes: [FnProbe]?
+    let plot: FnPlot?
     let engine: String?
     let serverMs: Double?
     let error: String?
+
+    enum CodingKeys: String, CodingKey {
+        case ok, kind
+        case varName = "var"
+        case input, exact, approx, value, regime, sign, dominant, std_part
+        case term_count, eval_N, eval_finite, terms, probes, plot, engine, serverMs, error
+    }
+
+    var isFunction: Bool {
+        kind == "fn" && plot != nil
+    }
 
     /// Instant local preview of substituting H ↦ N from the exact terms array (used while scrubbing slider).
     func localEvalFinite(at bigN: Double) -> Double? {
@@ -62,7 +113,6 @@ struct EvalResponse: Codable, Equatable {
         guard let terms, terms.count > maxVisibleTerms else {
             return (exact, 0)
         }
-        // Split on " + " or " - " only outside parentheses
         var parts: [String] = []
         var current = ""
         var depth = 0
@@ -141,6 +191,8 @@ enum InfPadPresets {
     static let simulatorLocalURL = "http://127.0.0.1:4420"
 
     static let starterChips: [StarterChip] = [
+        StarterChip(label: "1/(1+exp(-Hx))", expr: "1/(1+exp(-Hx))", hint: "Logistic step function"),
+        StarterChip(label: "dstep(x)", expr: "dstep(x)", hint: "Dirac delta curve"),
         StarterChip(label: "dstep(0)", expr: "dstep(0)", hint: "Dirac delta peak"),
         StarterChip(label: "ddstep(eps)", expr: "ddstep(eps)", hint: "Delta derivative"),
         StarterChip(label: "exp(H*eps)", expr: "exp(H*eps)", hint: "Exact cancellation"),
@@ -149,6 +201,6 @@ enum InfPadPresets {
     ]
 
     static let quickSymbols: [String] = [
-        "H", "eps", "^", "/", "(", ")", "+", "-", "*", "dstep(", "ddstep(", "exp(", "std("
+        "H", "eps", "x", "^", "/", "(", ")", "+", "-", "*", "exp(", "dstep(", "ddstep(", "std("
     ]
 }

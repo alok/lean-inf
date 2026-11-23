@@ -27,9 +27,9 @@ struct ContentView: View {
                         .padding(.horizontal, 16)
                         .padding(.vertical, 12)
                     } else {
-                        VStack(spacing: 16) {
+                        VStack(spacing: 12) {
                             leftCanvasPane
-                                .frame(height: geo.size.height * 0.48)
+                                .frame(height: geo.size.height * 0.36)
                             rightInspectorPane
                                 .frame(maxHeight: .infinity)
                         }
@@ -217,7 +217,7 @@ struct ContentView: View {
                             .font(.system(size: 20, weight: .medium, design: .rounded))
                             .foregroundStyle(theme.secondaryInk.opacity(0.65))
                             .multilineTextAlignment(.center)
-                        Text("Examples: dstep(0) · (1 + ε)³ · exp(H·ε) · diff(x⁴, x, 2)")
+                        Text("Examples: 1/(1+exp(-Hx)) · dstep(x) · (1 + ε)³ · diff(x⁴, x, 2)")
                             .font(.system(size: 18, design: .monospaced))
                             .foregroundStyle(theme.secondaryInk.opacity(0.55))
                     }
@@ -283,9 +283,21 @@ struct ContentView: View {
                     errorBanner(err)
                 }
 
-                resultCard
+                if let ev = store.evalResult, ev.ok, let plot = ev.plot, ev.isFunction {
+                    FunctionPlotCard(
+                        eval: ev,
+                        plot: plot,
+                        theme: theme,
+                        currentN: Int(store.sliderN.rounded()),
+                        latencyText: (store.ocrMs != nil || store.leanMs != nil) ? latencyBadgeText : nil
+                    )
 
-                finiteSliderCard
+                    finiteSliderCard
+                } else {
+                    resultCard
+
+                    finiteSliderCard
+                }
 
                 historyStripCard
             }
@@ -547,9 +559,10 @@ struct ContentView: View {
     // MARK: - Interactive H ↦ N Slider Card
 
     private var finiteSliderCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let isFn = store.evalResult?.isFunction == true
+        return VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
-                Text("FINITE PROJECTION  H ↦ N")
+                Text(isFn ? "LIVE SCALE  H ↦ N  (TIGHTENS STEP)" : "FINITE PROJECTION  H ↦ N")
                     .font(.system(size: 15, weight: .bold, design: .rounded))
                     .tracking(1.0)
                     .foregroundStyle(theme.secondaryInk)
@@ -563,12 +576,20 @@ struct ContentView: View {
             }
 
             HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Text(formattedFiniteReadout)
-                    .font(.system(size: 28, weight: .bold, design: .monospaced))
-                    .monospacedDigit()
-                    .foregroundStyle(theme.primaryInk)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
+                if isFn {
+                    Text(store.evalResult?.exact ?? "f(x) at H ↦ \(Int(store.sliderN.rounded()))")
+                        .font(.system(size: 18, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(theme.primaryInk)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                } else {
+                    Text(formattedFiniteReadout)
+                        .font(.system(size: 28, weight: .bold, design: .monospaced))
+                        .monospacedDigit()
+                        .foregroundStyle(theme.primaryInk)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
 
                 Spacer()
 
@@ -609,6 +630,11 @@ struct ContentView: View {
                 }
             )
             .tint(theme.accentCobalt)
+            .onChange(of: store.sliderN) { _, _ in
+                if store.isScrubbingN {
+                    store.scheduleDebouncedPlotUpdate()
+                }
+            }
         }
         .padding(16)
         .background(theme.surfaceCard, in: RoundedRectangle(cornerRadius: 18, style: .continuous))

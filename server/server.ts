@@ -56,9 +56,10 @@ const OCR_SYSTEM_PROMPT = `You are a high-precision mathematical handwriting OCR
 Your job is to transcribe the handwritten mathematical expression in the image into a single valid ASCII lean-inf calculator expression.
 
 STRICT GRAMMAR (LeanInf/Parser.lean):
-- Constants:
+- Constants & auto plot variable:
   - H : infinite unit (map handwritten ∞, ω, H to H)
   - eps : infinitesimal 1/H (map handwritten ε, ϵ, dx, eps to eps)
+  - x : free plot variable (KEEP free variable x verbatim for functions of x, e.g. 1/(1+exp(-H*x)), dstep(x), x^2 + eps!)
   - pi : 3.14159... (map π to pi)
   - e : Euler's number
 - Operators: +  -  *  /  ^  unary -  parentheses (...)  comparisons == != < <= > >=  statements separated by ;  assignments a = expr  function defs f(x) = body
@@ -70,13 +71,13 @@ STRICT GRAMMAR (LeanInf/Parser.lean):
   isinf, isfinite, isinfsm
 
 MANDATORY REWRITE RULES:
-1. Stacked fractions: write (numerator)/(denominator).
+1. Stacked fractions: write (numerator)/(denominator), or simple 1/(1+exp(-H*x)) without extra outer parens when clear.
 2. Exponents MUST use ASCII ^ with parentheses around negative or compound exponents: e.g. (1 + eps)^(-1), H^(1/2), eps^3, (1 + eps)^(1/eps). NEVER output Unicode superscripts or LaTeX.
-3. ALWAYS write explicit * between adjacent identifiers (e.g. H*eps, NOT Heps or Hε).
+3. ALWAYS write explicit * between adjacent identifiers (e.g. H*x, H*eps, NOT Hx, Heps, or Hε).
 4. Radicals: sqrt(A) for square root, (A)^(1/n) for nth root.
 5. Derivatives at a point: d/dx (E) |_{x=a} -> diff(E, x, a); f(x) = E; f'(a) -> f(x) = E; deriv(f, a).
-6. Nonstandard step / Dirac delta: L_H(x), Θ(x), u(x), step(x) -> step(x); δ(x), L'_H(x), dstep(x) -> dstep(x); δ'(x), L''_H(x), ddstep(x) -> ddstep(x).
-7. Exponential notation e^(...) -> exp(...) when exponent is compound (or e^(...)).
+6. Nonstandard step / Dirac delta: ONLY map explicit symbols L_H(x), Θ(x), u(x), step(x) -> step(x); δ(x), L'_H(x), dstep(x) -> dstep(x); δ'(x), L''_H(x), ddstep(x) -> ddstep(x). NEVER collapse an explicit logistic formula like 1/(1+e^(-Hx)) or 1/(1+exp(-Hx)) into step(x) — transcribe it faithfully as 1/(1+exp(-H*x)) keeping x!
+7. Exponential notation: ALWAYS rewrite e^(...) -> exp(...) (e.g., 1/(1+e^(-Hx)) -> 1/(1+exp(-H*x))).
 8. Output ONLY valid JSON matching the schema: { "expr": "...", "confidence": 0.0-1.0, "note": "" }. Never include LaTeX commands, dollar signs, backticks, or prose inside expr.`;
 
 const SUPERSCRIPT_MAP: Record<string, string> = {
@@ -95,6 +96,49 @@ const SUPERSCRIPT_MAP: Record<string, string> = {
   "⁽": "(",
   "⁾": ")",
 };
+
+/** Rewrites `e^(...)` (with arbitrarily nested parens) and `e^<atom>` to `exp(...)`. */
+function rewriteEToExp(input: string): string {
+  let s = input;
+  let out = "";
+  let i = 0;
+  while (i < s.length) {
+    const isWordBoundaryBefore = i === 0 || !/[A-Za-z0-9_]/.test(s[i - 1]);
+    if (s[i] === "e" && isWordBoundaryBefore) {
+      let j = i + 1;
+      while (j < s.length && s[j] === " ") j++;
+      if (j < s.length && s[j] === "^") {
+        j++;
+        while (j < s.length && s[j] === " ") j++;
+        if (j < s.length && s[j] === "(") {
+          let depth = 1;
+          let k = j + 1;
+          while (k < s.length && depth > 0) {
+            if (s[k] === "(") depth++;
+            else if (s[k] === ")") depth--;
+            k++;
+          }
+          if (depth === 0) {
+            const inner = rewriteEToExp(s.slice(j + 1, k - 1));
+            out += `exp(${inner})`;
+            i = k;
+            continue;
+          }
+        } else if (j < s.length) {
+          const m = s.slice(j).match(/^([+-]?[A-Za-z0-9_.*]+)/);
+          if (m) {
+            out += `exp(${m[1]})`;
+            i = j + m[1].length;
+            continue;
+          }
+        }
+      }
+    }
+    out += s[i];
+    i++;
+  }
+  return out;
+}
 
 function sanitizeLeanInfExpr(raw: string): string {
   let s = raw.trim();
@@ -151,9 +195,17 @@ function sanitizeLeanInfExpr(raw: string): string {
     return `^${mapped}`;
   });
 
-  // Catch accidental concatenation of H and eps
+  // Normalize e^(...) -> exp(...) (handles nested parens like 1/(1+e^(-H*(x-0.5))))
+  s = rewriteEToExp(s);
+
+  // Catch accidental concatenation of H / eps / x
   s = s.replace(/\bHeps\b/g, "H*eps");
   s = s.replace(/\bepsH\b/g, "eps*H");
+  s = s.replace(/\bHx\b/g, "H*x");
+  s = s.replace(/\bxH\b/g, "x*H");
+  s = s.replace(/\bhx\b/g, "h*x");
+  s = s.replace(/\bxeps\b/g, "x*eps");
+  s = s.replace(/\bepsx\b/g, "eps*x");
 
   // Collapse whitespace
   s = s.replace(/\s+/g, " ").trim();
