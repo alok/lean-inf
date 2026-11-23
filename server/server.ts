@@ -48,9 +48,20 @@ const BLOG_UI_PATH = join(BLOG_INF_DIR, "index.html");
 const CODE_SHOTS_DIR = join(BLOG_INF_DIR, "code-shots");
 const BENCH_CACHE_PATH = join(REPO_ROOT, "plots", "bench_results.json");
 const OCR_MAX_BODY_BYTES = 2 * 1024 * 1024;
+const EVAL_MAX_BODY_BYTES = 32 * 1024;
+const OCR_OVERALL_BUDGET_MS = 17_000;
+const OCR_PER_MODEL_TIMEOUT_MS = 7_500;
+const WORKER_DEFAULT_TIMEOUT_MS = 5_000;
+const WORKER_BENCH_TIMEOUT_MS = 120_000;
 const OCR_RATE_LIMIT_MAX = 30;
 const OCR_RATE_LIMIT_WINDOW_MS = 60_000;
 const ocrRequestTimestamps: number[] = [];
+
+function clampBigN(raw: unknown): number {
+  const n = Number(raw ?? 100);
+  if (!Number.isFinite(n) || n <= 0) return 100;
+  return Math.max(1e-6, Math.min(1e12, n));
+}
 
 const OCR_SYSTEM_PROMPT = `You are a high-precision mathematical handwriting OCR engine for the lean-inf Levi-Civita calculator (nonstandard analysis / infinitesimals & infinities in Lean 4).
 Your job is to transcribe the handwritten mathematical expression in the image into a single valid ASCII lean-inf calculator expression.
@@ -97,9 +108,9 @@ const SUPERSCRIPT_MAP: Record<string, string> = {
   "⁾": ")",
 };
 
-/** Rewrites `e^(...)` (with arbitrarily nested parens) and `e^<atom>` to `exp(...)`. */
+/** Rewrites `e^(...)` (with arbitrarily nested parens) and `e^<atom>` (including nested `^`) to `exp(...)`. */
 function rewriteEToExp(input: string): string {
-  let s = input;
+  const s = input;
   let out = "";
   let i = 0;
   while (i < s.length) {
@@ -110,6 +121,12 @@ function rewriteEToExp(input: string): string {
       if (j < s.length && s[j] === "^") {
         j++;
         while (j < s.length && s[j] === " ") j++;
+        // Handle e^(...) as well as e^-(...) / e^+(...)
+        let signPrefix = "";
+        if (j + 1 < s.length && (s[j] === "-" || s[j] === "+") && s[j + 1] === "(") {
+          signPrefix = s[j];
+          j++;
+        }
         if (j < s.length && s[j] === "(") {
           let depth = 1;
           let k = j + 1;
@@ -120,12 +137,13 @@ function rewriteEToExp(input: string): string {
           }
           if (depth === 0) {
             const inner = rewriteEToExp(s.slice(j + 1, k - 1));
-            out += `exp(${inner})`;
+            out += signPrefix ? `exp(${signPrefix}(${inner}))` : `exp(${inner})`;
             i = k;
             continue;
           }
         } else if (j < s.length) {
-          const m = s.slice(j).match(/^([+-]?[A-Za-z0-9_.*]+)/);
+          // Capture `^` inside unparenthesized exponents (e.g. e^-H*x^2 -> exp(-H*x^2))
+          const m = s.slice(j).match(/^([+-]?[A-Za-z0-9_.*^]+)/);
           if (m) {
             out += `exp(${m[1]})`;
             i = j + m[1].length;
@@ -258,9 +276,16 @@ async function callGeminiVisionOcr(imageBase64: string, mimeType: string): Promi
   const modelsToTry = Array.from(new Set(candidateModels));
 
   const cleanBase64 = imageBase64.replace(/^data:[^;]+;base64,/, "").replace(/\s+/g, "");
+  const overallStart = performance.now();
   let lastErr = "Gemini OCR request failed";
 
   for (const model of modelsToTry) {
+    const remainingBudgetMs = OCR_OVERALL_BUDGET_MS - (performance.now() - overallStart);
+    if (remainingBudgetMs < 1500) {
+      lastErr = `${lastErr} (overall ${OCR_OVERALL_BUDGET_MS}ms OCR budget exhausted)`;
+      break;
+    }
+    const perModelTimeoutMs = Math.max(1500, Math.min(OCR_PER_MODEL_TIMEOUT_MS, Math.floor(remainingBudgetMs)));
     const t0 = performance.now();
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
 
@@ -309,20 +334,21 @@ async function callGeminiVisionOcr(imageBase64: string, mimeType: string): Promi
           "Content-Type": "application/json",
           "x-goog-api-key": apiKey,
         },
-        signal: AbortSignal.timeout(9000),
+        signal: AbortSignal.timeout(perModelTimeoutMs),
         body: JSON.stringify(buildBody(true)),
       });
 
       if (res.status === 400) {
         const errPreview = await res.text();
         if (/thinking/i.test(errPreview)) {
+          const retryRemaining = Math.max(1500, Math.floor(OCR_OVERALL_BUDGET_MS - (performance.now() - overallStart)));
           res = await fetch(url, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
               "x-goog-api-key": apiKey,
             },
-            signal: AbortSignal.timeout(9000),
+            signal: AbortSignal.timeout(Math.min(OCR_PER_MODEL_TIMEOUT_MS, retryRemaining)),
             body: JSON.stringify(buildBody(false)),
           });
         } else {
@@ -386,50 +412,100 @@ class LeanWorker {
   private decoder = new TextDecoder();
   private queue: Promise<unknown> = Promise.resolve();
 
-  private ensureStarted(): void {
-    if (this.proc && this.proc.exitCode === null) return;
+  private resetIfCurrent(proc: ReturnType<typeof Bun.spawn>): void {
+    if (this.proc === proc) {
+      this.proc = null;
+      this.reader = null;
+      this.buffer = "";
+    }
+  }
+
+  private killAndReset(proc: ReturnType<typeof Bun.spawn>, reader: ReadableStreamDefaultReader<Uint8Array>): void {
+    try {
+      proc.kill("SIGKILL");
+    } catch {
+      // ignore if already exited
+    }
+    try {
+      void reader.cancel();
+    } catch {
+      // ignore reader cancel failure
+    }
+    this.resetIfCurrent(proc);
+  }
+
+  private ensureStarted(): { proc: ReturnType<typeof Bun.spawn>; reader: ReadableStreamDefaultReader<Uint8Array> } {
+    if (this.proc && this.proc.exitCode === null && this.reader) {
+      return { proc: this.proc, reader: this.reader };
+    }
     if (!existsSync(INF_BIN)) {
       throw new Error(`Compiled lean-inf binary not found at ${INF_BIN}. Run 'lake build' first.`);
     }
     this.buffer = "";
-    this.proc = Bun.spawn([INF_BIN, "serve-stdio"], {
+    const proc = Bun.spawn([INF_BIN, "serve-stdio"], {
       cwd: REPO_ROOT,
       stdin: "pipe",
       stdout: "pipe",
       stderr: "inherit",
     });
-    this.reader = (this.proc.stdout as ReadableStream<Uint8Array>).getReader();
+    const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
+    this.proc = proc;
+    this.reader = reader;
+    return { proc, reader };
   }
 
-  private async readLine(): Promise<string> {
-    if (!this.reader) throw new Error("Worker stdout reader unavailable");
+  private async readLine(
+    proc: ReturnType<typeof Bun.spawn>,
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+  ): Promise<string> {
     while (true) {
+      if (this.proc !== proc) {
+        throw new Error("lean-inf worker was recycled");
+      }
       const nl = this.buffer.indexOf("\n");
       if (nl !== -1) {
         const line = this.buffer.slice(0, nl);
         this.buffer = this.buffer.slice(nl + 1);
         return line;
       }
-      const { value, done } = await this.reader.read();
+      const { value, done } = await reader.read();
       if (done) {
-        this.proc = null;
-        this.reader = null;
+        this.resetIfCurrent(proc);
         throw new Error("lean-inf worker exited unexpectedly");
+      }
+      if (this.proc !== proc) {
+        throw new Error("lean-inf worker was recycled");
       }
       this.buffer += this.decoder.decode(value, { stream: true });
     }
   }
 
-  public request(command: string): Promise<string> {
+  public request(command: string, timeoutMs = WORKER_DEFAULT_TIMEOUT_MS): Promise<string> {
     const task = this.queue.then(async () => {
-      this.ensureStarted();
-      const stdin = this.proc!.stdin as import("bun").FileSink;
+      const { proc, reader } = this.ensureStarted();
+      const stdin = proc.stdin as import("bun").FileSink;
       const sanitized = command.replace(/[\r\n]+/g, " ");
-      stdin.write(sanitized + "\n");
-      await stdin.flush();
-      return await this.readLine();
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          this.killAndReset(proc, reader);
+          reject(new Error(`Lean 4 worker timed out after ${timeoutMs} ms and was respawned`));
+        }, timeoutMs);
+      });
+      try {
+        stdin.write(sanitized + "\n");
+        await stdin.flush();
+        return await Promise.race([this.readLine(proc, reader), timeoutPromise]);
+      } catch (err) {
+        if (this.proc === proc && proc.exitCode !== null) {
+          this.resetIfCurrent(proc);
+        }
+        throw err;
+      } finally {
+        if (timer !== null) clearTimeout(timer);
+      }
     });
-    // Keep queue alive even if one request rejects
+    // Keep queue alive even if one request rejects or times out
     this.queue = task.catch(() => {});
     return task;
   }
@@ -539,9 +615,8 @@ const server = Bun.serve({
         const allowedMimes = new Set(["image/png", "image/jpeg", "image/webp"]);
         const mimeType = allowedMimes.has(mimeTypeRaw) ? mimeTypeRaw : "image/png";
 
-        let bigN = Number(payload.N ?? 100);
+        const bigN = clampBigN(payload.N);
         let order = Number(payload.order ?? 10);
-        if (!Number.isFinite(bigN) || bigN <= 0) bigN = 100;
         if (!Number.isFinite(order)) order = 10;
         order = Math.max(4, Math.min(24, Math.round(order)));
 
@@ -627,17 +702,29 @@ const server = Bun.serve({
         let bigN = 100;
         let order = 10;
         if (req.method === "POST") {
-          const payload = (await req.json()) as {
-            expr?: string;
-            N?: number;
-            order?: number;
-          };
+          const contentLengthHeader = req.headers.get("content-length");
+          if (contentLengthHeader && Number(contentLengthHeader) > EVAL_MAX_BODY_BYTES) {
+            return jsonResponse(JSON.stringify({ ok: false, error: "Payload too large (max 32 KB)" }), 413);
+          }
+          const rawBody = await req.text();
+          if (Buffer.byteLength(rawBody, "utf8") > EVAL_MAX_BODY_BYTES) {
+            return jsonResponse(JSON.stringify({ ok: false, error: "Payload too large (max 32 KB)" }), 413);
+          }
+          let payload: { expr?: unknown; N?: unknown; order?: unknown };
+          try {
+            payload = JSON.parse(rawBody);
+          } catch {
+            return jsonResponse(JSON.stringify({ ok: false, error: "Invalid JSON body" }), 400);
+          }
+          if (!payload || typeof payload !== "object") {
+            return jsonResponse(JSON.stringify({ ok: false, error: "Invalid JSON object" }), 400);
+          }
           expr = String(payload.expr ?? "").trim();
-          bigN = Number(payload.N ?? 100);
+          bigN = clampBigN(payload.N);
           order = Number(payload.order ?? 10);
         } else {
           expr = (url.searchParams.get("expr") ?? "").trim();
-          bigN = Number(url.searchParams.get("N") ?? "100");
+          bigN = clampBigN(url.searchParams.get("N"));
           order = Number(url.searchParams.get("order") ?? "10");
         }
         if (!expr) {
@@ -646,7 +733,6 @@ const server = Bun.serve({
         if (expr.length > 500) {
           return jsonResponse(JSON.stringify({ ok: false, error: "Expression too long (max 500 chars)" }), 400);
         }
-        if (!Number.isFinite(bigN) || bigN <= 0) bigN = 100;
         if (!Number.isFinite(order)) order = 10;
         order = Math.max(4, Math.min(24, Math.round(order)));
 
@@ -676,7 +762,7 @@ const server = Bun.serve({
           if (existsSync(BENCH_CACHE_PATH)) {
             benchCache = readFileSync(BENCH_CACHE_PATH, "utf8");
           } else {
-            benchCache = await worker.request("bench");
+            benchCache = await worker.request("bench", WORKER_BENCH_TIMEOUT_MS);
           }
         }
         return jsonResponse(benchCache);

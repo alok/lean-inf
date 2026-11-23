@@ -46,6 +46,12 @@ final class InfPadStore {
     private let api = InfAPIClient()
     private let historyDir: URL
     private var sliderDebounceTask: Task<Void, Never>? = nil
+    private var evalGeneration: UInt64 = 0
+
+    private func nextGeneration() -> UInt64 {
+        evalGeneration &+= 1
+        return evalGeneration
+    }
 
     var theme: InfTheme { InfTheme(isDark: isDark) }
 
@@ -135,10 +141,19 @@ final class InfPadStore {
             return
         }
 
+        sliderDebounceTask?.cancel()
+        sliderDebounceTask = nil
+        let gen = nextGeneration()
+        let drawingCopy = drawing
+
         isOcrRunning = true
         errorMessage = nil
         expandExactTail = false
-        defer { isOcrRunning = false }
+        defer {
+            if gen == evalGeneration {
+                isOcrRunning = false
+            }
+        }
 
         do {
             let resp = try await api.ocrEvaluate(
@@ -147,6 +162,8 @@ final class InfPadStore {
                 bigN: sliderN,
                 order: order
             )
+            guard gen == evalGeneration else { return }
+
             ocrMs = resp.ocrMs ?? resp.ocr?.ocrMs
             leanMs = resp.serverMs ?? resp.eval?.serverMs
             ocrModel = resp.model ?? resp.ocr?.model
@@ -168,7 +185,7 @@ final class InfPadStore {
                         eval: ev,
                         ocrMs: ocrMs,
                         leanMs: leanMs,
-                        drawingSnapshot: drawing
+                        drawingSnapshot: drawingCopy
                     )
                 }
             } else {
@@ -176,6 +193,7 @@ final class InfPadStore {
             }
             isConnected = true
         } catch {
+            guard gen == evalGeneration else { return }
             errorMessage = error.localizedDescription
         }
     }
@@ -186,11 +204,20 @@ final class InfPadStore {
             errorMessage = "Enter an expression to evaluate."
             return
         }
+
+        sliderDebounceTask?.cancel()
+        sliderDebounceTask = nil
+        let gen = nextGeneration()
+
         expressionText = target
         isEvaluating = true
         errorMessage = nil
         expandExactTail = false
-        defer { isEvaluating = false }
+        defer {
+            if gen == evalGeneration {
+                isEvaluating = false
+            }
+        }
 
         do {
             let ev = try await api.evaluate(
@@ -199,6 +226,8 @@ final class InfPadStore {
                 bigN: sliderN,
                 order: order
             )
+            guard gen == evalGeneration else { return }
+
             evalResult = ev
             leanMs = ev.serverMs
             ocrMs = nil
@@ -218,6 +247,7 @@ final class InfPadStore {
                 )
             }
         } catch {
+            guard gen == evalGeneration else { return }
             errorMessage = error.localizedDescription
         }
     }
@@ -233,15 +263,20 @@ final class InfPadStore {
         sliderDebounceTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(120))
             guard !Task.isCancelled, let self else { return }
-            await self.commitSliderN()
+            await self.performSliderEval()
         }
     }
 
     func commitSliderN() async {
         sliderDebounceTask?.cancel()
         sliderDebounceTask = nil
+        await performSliderEval()
+    }
+
+    private func performSliderEval() async {
         guard let currentExpr = evalResult?.input ?? (expressionText.isEmpty ? nil : expressionText) else { return }
         guard !currentExpr.isEmpty else { return }
+        let gen = nextGeneration()
         let requestedN = sliderN
         do {
             let ev = try await api.evaluate(
@@ -250,13 +285,13 @@ final class InfPadStore {
                 bigN: requestedN,
                 order: order
             )
-            // Only apply if user hasn't switched expressions while in-flight
-            if ev.ok && (evalResult?.input == nil || evalResult?.input == currentExpr) {
+            guard gen == evalGeneration else { return }
+            if ev.ok {
                 evalResult = ev
                 leanMs = ev.serverMs
             }
         } catch {
-            // Local finite preview stays visible even if network blips during slider release
+            // Local finite preview stays visible even if network blips during slider scrub
         }
     }
 

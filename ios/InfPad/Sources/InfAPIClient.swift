@@ -81,8 +81,8 @@ final class InfAPIClient {
 
     init() {
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 20
-        config.timeoutIntervalForResource = 30
+        config.timeoutIntervalForRequest = 25
+        config.timeoutIntervalForResource = 35
         config.waitsForConnectivity = false
         self.session = URLSession(configuration: config)
     }

@@ -69,7 +69,9 @@ struct FunctionPlotCard: View {
 
     private var pointAtZero: (Double, Double)? {
         guard !activePoints.isEmpty else { return nil }
-        return activePoints.min(by: { abs($0.0) < abs($1.0) })
+        guard let closest = activePoints.min(by: { abs($0.0) < abs($1.0) }) else { return nil }
+        let tol = max(1e-9, (xRange.max - xRange.min) * 1e-4)
+        return abs(closest.0) <= tol ? closest : nil
     }
 
     var body: some View {
@@ -237,44 +239,66 @@ struct FunctionPlotCard: View {
                         ctx.draw(tickText, at: CGPoint(x: px, y: plotRect.maxY + 15), anchor: .center)
                     }
 
-                    // 6. Subtle translucent fill + high-contrast 2.8pt curve
+                    // 6. Clipped continuous segments + discontinuity-safe fill + high-contrast 2.8pt curve
                     if pts.count >= 2 {
-                        var curve = Path()
-                        var started = false
-                        var prevY: CGFloat = 0
-                        let maxJump = plotRect.height * 1.6
+                        let maxJump = plotRect.height * 0.65
+                        var segments: [[CGPoint]] = []
+                        var currentSeg: [CGPoint] = []
+                        var prevRawY: Double? = nil
+                        let ySpan = max(1e-9, yr.max - yr.min)
 
                         for (x, y) in pts {
                             let px = mapX(x)
                             let py = mapY(y)
-                            if !started || abs(py - prevY) > maxJump {
-                                curve.move(to: CGPoint(x: px, y: py))
-                                started = true
+                            let isPoleSignFlip = (prevRawY != nil) && (
+                                (prevRawY! < yr.min && y > yr.max) ||
+                                (prevRawY! > yr.max && y < yr.min) ||
+                                (prevRawY! * y < 0 && abs(y - prevRawY!) > 0.55 * ySpan)
+                            )
+                            if let lastPt = currentSeg.last, (abs(py - lastPt.y) > maxJump || isPoleSignFlip) {
+                                if !currentSeg.isEmpty { segments.append(currentSeg) }
+                                currentSeg = [CGPoint(x: px, y: py)]
                             } else {
-                                curve.addLine(to: CGPoint(x: px, y: py))
+                                currentSeg.append(CGPoint(x: px, y: py))
                             }
-                            prevY = py
+                            prevRawY = y
                         }
+                        if !currentSeg.isEmpty { segments.append(currentSeg) }
 
-                        // Soft area fill down to baseline y=0 (or plot bottom)
-                        let baselineY = (yr.min <= 0 && yr.max >= 0) ? mapY(0) : plotRect.maxY
-                        var fillPath = curve
-                        if let last = pts.last, let first = pts.first {
-                            fillPath.addLine(to: CGPoint(x: mapX(last.0), y: baselineY))
-                            fillPath.addLine(to: CGPoint(x: mapX(first.0), y: baselineY))
+                        var clipped = ctx
+                        clipped.clip(to: Path(plotRect))
+
+                        // Only draw soft area fill when curve is a single continuous branch (zero diagonal pole artifacts!)
+                        if segments.count == 1, let seg = segments.first, seg.count >= 2 {
+                            let baselineY = (yr.min <= 0 && yr.max >= 0) ? mapY(0) : plotRect.maxY
+                            var fillPath = Path()
+                            fillPath.move(to: seg[0])
+                            for pt in seg.dropFirst() {
+                                fillPath.addLine(to: pt)
+                            }
+                            fillPath.addLine(to: CGPoint(x: seg.last!.x, y: baselineY))
+                            fillPath.addLine(to: CGPoint(x: seg.first!.x, y: baselineY))
                             fillPath.closeSubpath()
-                            ctx.fill(fillPath, with: .color(theme.accentCobalt.opacity(0.08)))
+                            clipped.fill(fillPath, with: .color(theme.accentCobalt.opacity(0.08)))
                         }
 
-                        ctx.stroke(
+                        var curve = Path()
+                        for seg in segments where seg.count >= 2 {
+                            curve.move(to: seg[0])
+                            for pt in seg.dropFirst() {
+                                curve.addLine(to: pt)
+                            }
+                        }
+
+                        clipped.stroke(
                             curve,
                             with: .color(theme.accentCobalt),
                             style: StrokeStyle(lineWidth: 2.8, lineCap: .round, lineJoin: .round)
                         )
                     }
 
-                    // 7. Highlighted dot at (0, f_N(0))
-                    if let p0 = pointAtZero, xr.min <= p0.0, p0.0 <= xr.max {
+                    // 7. Highlighted dot at (0, f_N(0)) only when x = 0 is actually sampled & in-frame
+                    if let p0 = pointAtZero, xr.min <= p0.0, p0.0 <= xr.max, yr.min <= p0.1, p0.1 <= yr.max {
                         let cx = mapX(p0.0)
                         let cy = mapY(p0.1)
                         let outer = CGRect(x: cx - 6, y: cy - 6, width: 12, height: 12)
@@ -293,16 +317,18 @@ struct FunctionPlotCard: View {
                         vLine.addLine(to: CGPoint(x: cx, y: plotRect.maxY))
                         ctx.stroke(vLine, with: .color(theme.accentCobalt.opacity(0.55)), lineWidth: 1.5)
 
-                        var hLine = Path()
-                        hLine.move(to: CGPoint(x: plotRect.minX, y: cy))
-                        hLine.addLine(to: CGPoint(x: plotRect.maxX, y: cy))
-                        ctx.stroke(hLine, with: .color(theme.accentCobalt.opacity(0.35)), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                        if yr.min <= active.y && active.y <= yr.max {
+                            var hLine = Path()
+                            hLine.move(to: CGPoint(x: plotRect.minX, y: cy))
+                            hLine.addLine(to: CGPoint(x: plotRect.maxX, y: cy))
+                            ctx.stroke(hLine, with: .color(theme.accentCobalt.opacity(0.35)), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
 
-                        let ring = CGRect(x: cx - 8, y: cy - 8, width: 16, height: 16)
-                        let dot = CGRect(x: cx - 5, y: cy - 5, width: 10, height: 10)
-                        ctx.fill(Path(ellipseIn: ring), with: .color(theme.elevatedCard))
-                        ctx.stroke(Path(ellipseIn: ring), with: .color(theme.accentCobalt), lineWidth: 2)
-                        ctx.fill(Path(ellipseIn: dot), with: .color(theme.accentCobalt))
+                            let ring = CGRect(x: cx - 8, y: cy - 8, width: 16, height: 16)
+                            let dot = CGRect(x: cx - 5, y: cy - 5, width: 10, height: 10)
+                            ctx.fill(Path(ellipseIn: ring), with: .color(theme.elevatedCard))
+                            ctx.stroke(Path(ellipseIn: ring), with: .color(theme.accentCobalt), lineWidth: 2)
+                            ctx.fill(Path(ellipseIn: dot), with: .color(theme.accentCobalt))
+                        }
                     }
                 }
                 .contentShape(Rectangle())
@@ -334,6 +360,14 @@ struct FunctionPlotCard: View {
                             .background(theme.accentCobalt, in: Capsule())
                     } else if let p0 = pointAtZero {
                         Text("f_\(currentN)(0) = \(formatReadout(p0.1))  ·  drag to inspect")
+                            .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(theme.secondaryInk)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(theme.paperBackground.opacity(0.92), in: Capsule())
+                            .overlay(Capsule().stroke(theme.borderSubtle, lineWidth: 1))
+                    } else {
+                        Text("N = \(currentN)  ·  drag curve to inspect")
                             .font(.system(size: 14, weight: .semibold, design: .monospaced))
                             .foregroundStyle(theme.secondaryInk)
                             .padding(.horizontal, 10)
