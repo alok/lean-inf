@@ -1212,7 +1212,8 @@ termination_by l.length
 
 /-! ### Scaled Common-Denominator SOA Sparse Merge (Rung 6, zero `sorry`) -/
 
-private theorem mkRat_one (n : Int) : mkRat n 1 = Rat.ofInt n := by
+/-- `mkRat n 1` equals `Rat.ofInt n`. -/
+theorem mkRat_one (n : Int) : mkRat n 1 = Rat.ofInt n := by
   apply Rat.ext <;> simp [Rat.num_mkRat, Rat.den_mkRat, Rat.ofInt]
 
 private theorem mkRat_add_same_den (a b : Int) {d : Nat} (hd : d ≠ 0) :
@@ -1273,7 +1274,8 @@ private theorem mkRat_lt_iff {a b : Int} {d : Nat} (hd : d ≠ 0) :
     rw [← hL, ← hR] at hm
     exact Int.lt_of_mul_lt_mul_right hm (by omega)
 
-private theorem mkRat_scaled_eq (r : Rat) {d : Nat} (hd : d ≠ 0) (hdvd : r.den ∣ d) :
+/-- Scaling a rational by a multiple `d` of its denominator recovers it via `mkRat`. -/
+theorem mkRat_scaled_eq (r : Rat) {d : Nat} (hd : d ≠ 0) (hdvd : r.den ∣ d) :
     mkRat (r.num * Int.ofNat (d / r.den)) d = r := by
   have hk_mul : r.den * (d / r.den) = d := Nat.mul_div_cancel' hdvd
   have hk_nz : d / r.den ≠ 0 := by
@@ -1346,7 +1348,8 @@ private theorem scanExpLcm_dvd (maxDen : Nat) (ts : TermList) (acc D : Nat)
         · exact Nat.dvd_trans (Nat.dvd_lcm_right acc e.den) hlcmD
         · exact hrest q hmem
 
-private theorem scanCoeffLcm_dvd (maxDen : Nat) (ts : TermList) (acc D : Nat)
+/-- Whenever `scanCoeffLcm` returns a nonzero bound `D`, every coefficient denominator divides `D`. -/
+theorem scanCoeffLcm_dvd (maxDen : Nat) (ts : TermList) (acc D : Nat)
     (hacc : acc ≠ 0) (h : scanCoeffLcm maxDen ts acc = D) (hD : D ≠ 0) :
     acc ∣ D ∧ ∀ p ∈ ts, p.2.den ∣ D := by
   induction ts generalizing acc with

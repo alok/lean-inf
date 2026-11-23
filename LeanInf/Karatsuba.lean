@@ -1463,6 +1463,246 @@ theorem fromIntGrid_wf {e0 step : Rat} (hstep : step > 0) (arr : Array Int) :
   rw [fromIntGrid_eq_fromGrid]
   exact fromGrid_wf hstep _
 
+/-! ### Scaled Rational Dense Grid Clearing (`extractScaledIntGrid` & `fromScaledIntGrid`, Rung 7) -/
+
+/-- Single-pass running-exponent scaled-integer grid extractor: clears coefficient denominators
+    using common denominator `dc` (`c ↦ c.num * (dc / c.den)`), routing rational dense grids
+    directly into unboxed `Array Int` Karatsuba & multi-limb Kronecker GMP. -/
+def extractScaledIntGridLoop (step : Rat) (dc : Nat) :
+    Nat → Rat → TermList → Array Int → Option (Array Int)
+  | _, _, [], acc => some acc
+  | 0, _, _ :: _, _ => none
+  | fuel + 1, curExp, (e, c) :: rest, acc =>
+    match ratCmpFast e curExp with
+    | .eq =>
+      let ci := if dc == 1 then c.num else c.num * Int.ofNat (dc / c.den)
+      extractScaledIntGridLoop step dc fuel (ratSubFast curExp step) rest (acc.push ci)
+    | .lt =>
+      extractScaledIntGridLoop step dc fuel (ratSubFast curExp step) ((e, c) :: rest) (acc.push 0)
+    | .gt => none
+
+/-- Entry point for single-pass denominator-cleared `Array Int` grid extraction. -/
+@[inline] def extractScaledIntGrid (e0 step : Rat) (dc fuel : Nat) (ts : TermList) :
+    Option (Array Int) :=
+  extractScaledIntGridLoop step dc fuel e0 ts (Array.mkEmpty ts.length)
+
+private theorem extractScaledIntGridLoop_sound {e0 step : Rat} {dc fuel : Nat} {ts : TermList}
+    {acc res : Array Int} (hdc : dc ≠ 0) (hdvd : ∀ p ∈ ts, p.2.den ∣ dc)
+    (h : extractScaledIntGridLoop step dc fuel (e0 - (acc.size : Rat) * step) ts acc = some res)
+    (e : Rat) :
+    coeffOf (fromGrid e0 step (res.toList.map (fun c => mkRat c dc))) e =
+      coeffOf (fromGrid e0 step (acc.toList.map (fun c => mkRat c dc))) e + coeffOf ts e := by
+  induction fuel generalizing ts acc res with
+  | zero =>
+    cases ts with
+    | nil =>
+      simp only [extractScaledIntGridLoop, Option.some.injEq] at h
+      subst h
+      simp [coeffOf, Rat.add_zero]
+    | cons _ _ => simp [extractScaledIntGridLoop] at h
+  | succ fuel' ih =>
+    cases ts with
+    | nil =>
+      simp only [extractScaledIntGridLoop, Option.some.injEq] at h
+      subst h
+      simp [coeffOf, Rat.add_zero]
+    | cons p rest =>
+      rcases p with ⟨ep, cp⟩
+      simp only [extractScaledIntGridLoop] at h
+      have hcd : cp.den ∣ dc := hdvd (ep, cp) (List.mem_cons_self ..)
+      have hsub : ratSubFast (e0 - (acc.size : Rat) * step) step =
+          e0 - ((acc.size + 1 : Nat) : Rat) * step := by
+        rw [ratSubFast_eq, nat_cast_succ_rat]; grind
+      cases hcmp : ratCmpFast ep (e0 - (acc.size : Rat) * step) <;> rw [hcmp] at h
+      · -- .lt: emit 0 gap, keep (ep, cp) :: rest
+        have hsz : (acc.push 0).size = acc.size + 1 := Array.size_push 0
+        rw [hsub, ← hsz] at h
+        rw [ih hdvd h]
+        simp only [fromGrid, Array.toList_push, List.map_append, List.map_singleton,
+          fromGridAux_append_singleton, Rat.zero_mkRat, beq_self_eq_true, ↓reduceIte,
+          List.append_nil]
+      · -- .eq: emit scaled integer coeff, advance rest
+        have hep : ep = e0 - (acc.size : Rat) * step := by
+          have h1 : ¬ (ep > e0 - (acc.size : Rat) * step) := by
+            intro hg; have := (ratCmpFast_gt _ _).mpr hg; rw [hcmp] at this; cases this
+          have h2 : ¬ (e0 - (acc.size : Rat) * step > ep) := by
+            intro hl; have := (ratCmpFast_lt _ _).mpr hl; rw [hcmp] at this; cases this
+          grind
+        let ci : Int := if dc == 1 then cp.num else cp.num * Int.ofNat (dc / cp.den)
+        have hcp : mkRat ci dc = cp := by
+          unfold ci
+          split
+          · rename_i h1
+            have hdc1 : dc = 1 := eq_of_beq h1
+            subst hdc1
+            have hden1 : cp.den = 1 := Nat.dvd_one.mp hcd
+            rw [mkRat_one]
+            apply Rat.ext <;> simp [Rat.ofInt, hden1]
+          · exact mkRat_scaled_eq cp hdc hcd
+        have hsz : (acc.push ci).size = acc.size + 1 := Array.size_push ci
+        rw [hsub, ← hsz] at h
+        rw [ih (fun q hq => hdvd q (List.mem_cons_of_mem _ hq)) h]
+        simp only [fromGrid, Array.toList_push, List.map_append, List.map_singleton,
+          fromGridAux_append_singleton, hcp, List.length_map, Array.length_toList,
+          Nat.zero_add, coeffOf_append]
+        split
+        · rename_i hz
+          have hcz : cp = 0 := eq_of_beq hz
+          simp [coeffOf, hcz, Rat.zero_add, Rat.add_zero]
+        · simp only [coeffOf, hep, Rat.add_zero, Rat.add_assoc]
+      · simp at h
+
+/-- Soundness of `extractScaledIntGrid`: whenever extraction succeeds with common denominator `dc`,
+    `fromGrid` on the scaled array has identical `coeffOf` to `ts` at every exponent `e`. -/
+theorem extractScaledIntGrid_sound {e0 step : Rat} {dc fuel : Nat} {ts : TermList} {arr : Array Int}
+    (hdc : dc ≠ 0) (hdvd : ∀ p ∈ ts, p.2.den ∣ dc)
+    (h : extractScaledIntGrid e0 step dc fuel ts = some arr) (e : Rat) :
+    coeffOf (fromGrid e0 step (arr.toList.map (fun c => mkRat c dc))) e = coeffOf ts e := by
+  unfold extractScaledIntGrid at h
+  have hcur : e0 = e0 - ((Array.mkEmpty ts.length : Array Int).size : Rat) * step := by
+    simp; grind
+  rw [hcur] at h
+  have hs := extractScaledIntGridLoop_sound (e0 := e0) (step := step) hdc hdvd h e
+  simpa [fromGrid, fromGridAux, coeffOf, Rat.zero_add] using hs
+
+/-- Backwards tail-recursive reconstruction from `Array Int` dividing by fixed `1 < dc ≤ 256`
+    via `O(1)` `RatDenTable` (zero `Nat.gcd`, zero `List.reverse`). -/
+def fromScaledIntGridTabLoop {dc : Nat} (tc : RatDenTable dc) (step : Rat) (arr : Array Int) :
+    (i : Nat) → i ≤ arr.size → Rat → TermList → TermList
+  | 0, _, _, acc => acc
+  | i + 1, hi, curExp, acc =>
+    let nextExp := ratAddFast curExp step
+    let c := arr[i]
+    let acc' := if c == 0 then acc else (nextExp, tc.mkRatFast c) :: acc
+    fromScaledIntGridTabLoop tc step arr i (Nat.le_of_succ_le hi) nextExp acc'
+
+/-- Backwards tail-recursive reconstruction from `Array Int` dividing by general `dc`
+    (zero `List.reverse`, zero `Rat.mul` inside loop). -/
+def fromScaledIntGridLoop (dc : Nat) (step : Rat) (arr : Array Int) :
+    (i : Nat) → i ≤ arr.size → Rat → TermList → TermList
+  | 0, _, _, acc => acc
+  | i + 1, hi, curExp, acc =>
+    let nextExp := ratAddFast curExp step
+    let c := arr[i]
+    let acc' := if c == 0 then acc else (nextExp, mkRat c dc) :: acc
+    fromScaledIntGridLoop dc step arr i (Nat.le_of_succ_le hi) nextExp acc'
+
+/-- Reconstruct a canonical `WF` `TermList` from denominator-scaled `Array Int` on grid `e0 - k * step`. -/
+def fromScaledIntGrid (e0 step : Rat) (dc : Nat) (arr : Array Int) : TermList :=
+  if dc == 1 then
+    fromIntGrid e0 step arr
+  else if hdc : dc ≠ 0 ∧ dc ≤ 256 then
+    let tc := RatDenTable.build dc hdc.1
+    fromScaledIntGridTabLoop tc step arr arr.size (Nat.le_refl _) (e0 - (arr.size : Rat) * step) []
+  else
+    fromScaledIntGridLoop dc step arr arr.size (Nat.le_refl _) (e0 - (arr.size : Rat) * step) []
+
+private theorem fromScaledIntGridTabLoop_eq {dc : Nat} (tc : RatDenTable dc) (e0 step : Rat)
+    (arr : Array Int) (i : Nat) (hi : i ≤ arr.size) (acc : TermList) :
+    fromScaledIntGridTabLoop tc step arr i hi (e0 - (i : Rat) * step) acc =
+      fromGridAux e0 step 0 ((arr.toList.take i).map (fun c => mkRat c dc)) ++ acc := by
+  induction i generalizing acc with
+  | zero => simp [fromScaledIntGridTabLoop, fromGridAux]
+  | succ i ih =>
+    simp only [fromScaledIntGridTabLoop]
+    have hnext : ratAddFast (e0 - ((i + 1 : Nat) : Rat) * step) step = e0 - (i : Rat) * step := by
+      rw [ratAddFast_eq, nat_cast_succ_rat]; grind
+    rw [hnext, ih (Nat.le_of_succ_le hi)]
+    have htake : arr.toList.take (i + 1) = arr.toList.take i ++ [arr[i]] := by
+      have hi' : i < arr.toList.length := by simp; omega
+      simpa using List.take_succ_eq_append_getElem hi'
+    rw [htake, List.map_append, List.map_singleton, fromGridAux_append_singleton]
+    have hlen : ((arr.toList.take i).map (fun c => mkRat c dc)).length = i := by
+      simp [List.length_take]; omega
+    have hzero : (arr[i] == 0) = (mkRat arr[i] dc == 0) := by
+      cases h1 : (arr[i] == 0) <;> cases h2 : (mkRat arr[i] dc == 0) <;> try rfl
+      · have h0 := (Rat.mkRat_eq_zero tc.hd).mp (eq_of_beq h2); simp [h0] at h1
+      · have h0 := eq_of_beq h1; rw [h0] at h2; simp at h2
+    rw [hlen, Nat.zero_add, tc.mkRatFast_eq, hzero]
+    split <;> simp [List.append_assoc]
+
+private theorem fromScaledIntGridLoop_eq {dc : Nat} (hdc : dc ≠ 0) (e0 step : Rat)
+    (arr : Array Int) (i : Nat) (hi : i ≤ arr.size) (acc : TermList) :
+    fromScaledIntGridLoop dc step arr i hi (e0 - (i : Rat) * step) acc =
+      fromGridAux e0 step 0 ((arr.toList.take i).map (fun c => mkRat c dc)) ++ acc := by
+  induction i generalizing acc with
+  | zero => simp [fromScaledIntGridLoop, fromGridAux]
+  | succ i ih =>
+    simp only [fromScaledIntGridLoop]
+    have hnext : ratAddFast (e0 - ((i + 1 : Nat) : Rat) * step) step = e0 - (i : Rat) * step := by
+      rw [ratAddFast_eq, nat_cast_succ_rat]; grind
+    rw [hnext, ih (Nat.le_of_succ_le hi)]
+    have htake : arr.toList.take (i + 1) = arr.toList.take i ++ [arr[i]] := by
+      have hi' : i < arr.toList.length := by simp; omega
+      simpa using List.take_succ_eq_append_getElem hi'
+    rw [htake, List.map_append, List.map_singleton, fromGridAux_append_singleton]
+    have hlen : ((arr.toList.take i).map (fun c => mkRat c dc)).length = i := by
+      simp [List.length_take]; omega
+    have hzero : (arr[i] == 0) = (mkRat arr[i] dc == 0) := by
+      cases h1 : (arr[i] == 0) <;> cases h2 : (mkRat arr[i] dc == 0) <;> try rfl
+      · have h0 := (Rat.mkRat_eq_zero hdc).mp (eq_of_beq h2); simp [h0] at h1
+      · have h0 := eq_of_beq h1; rw [h0] at h2; simp at h2
+    rw [hlen, Nat.zero_add, hzero]
+    split <;> simp [List.append_assoc]
+
+/-- Structural identity bridging `fromScaledIntGrid` directly to `fromGrid`. -/
+theorem fromScaledIntGrid_eq_fromGrid (e0 step : Rat) {dc : Nat} (hdc : dc ≠ 0) (arr : Array Int) :
+    fromScaledIntGrid e0 step dc arr = fromGrid e0 step (arr.toList.map (fun c => mkRat c dc)) := by
+  unfold fromScaledIntGrid fromGrid
+  split
+  · rename_i h1
+    have hdc1 : dc = 1 := eq_of_beq h1
+    subst hdc1
+    rw [fromIntGrid_eq_fromGrid]
+    unfold fromGrid
+    congr 1
+    apply List.map_congr_left
+    intro c _; exact (mkRat_one c).symm
+  · split
+    · rw [fromScaledIntGridTabLoop_eq]
+      simp [List.take_of_length_le]
+    · rw [fromScaledIntGridLoop_eq hdc]
+      simp [List.take_of_length_le]
+
+/-- `fromScaledIntGrid` always produces a canonical `WF` term list when `step > 0` and `dc ≠ 0`. -/
+theorem fromScaledIntGrid_wf {e0 step : Rat} (hstep : step > 0) {dc : Nat} (hdc : dc ≠ 0)
+    (arr : Array Int) : WF (fromScaledIntGrid e0 step dc arr) := by
+  rw [fromScaledIntGrid_eq_fromGrid e0 step hdc]
+  exact fromGrid_wf hstep _
+
+/-- Scalar linearity of `dMulSchoolbook` in the left operand. -/
+theorem dCoeff_dMulSchoolbook_scale_left (s : Rat) (a b : List Rat) (k : Nat) :
+    dCoeff (dMulSchoolbook (dScale s a) b) k = s * dCoeff (dMulSchoolbook a b) k := by
+  induction a generalizing k with
+  | nil => simp [dScale, dMulSchoolbook, dCoeff, Rat.mul_zero]
+  | cons a0 as ih =>
+    have hcons : dScale s (a0 :: as) = (s * a0) :: dScale s as := by
+      simp [dScale, ratMulFast_eq]
+    rw [hcons, dMulSchoolbook, dMulSchoolbook]
+    simp only [dCoeff_dAdd, dCoeff_dScale]
+    cases k with
+    | zero =>
+      simp only [dCoeff_cons_zero, Rat.add_zero]
+      grind
+    | succ k' =>
+      simp only [dCoeff_cons_succ, ih k']
+      grind
+
+/-- Scalar linearity of `dMulSchoolbook` in the right operand. -/
+theorem dCoeff_dMulSchoolbook_scale_right (s : Rat) (a b : List Rat) (k : Nat) :
+    dCoeff (dMulSchoolbook a (dScale s b)) k = s * dCoeff (dMulSchoolbook a b) k := by
+  induction a generalizing k with
+  | nil => simp [dMulSchoolbook, dCoeff, Rat.mul_zero]
+  | cons a0 as ih =>
+    simp only [dMulSchoolbook, dCoeff_dAdd, dCoeff_dScale]
+    cases k with
+    | zero =>
+      simp only [dCoeff_cons_zero, Rat.add_zero]
+      grind
+    | succ k' =>
+      simp only [dCoeff_cons_succ, ih k']
+      grind
+
 /-- Combined `Array Int` grid-Karatsuba multiplication matches `mulNaiveTerms` whenever
     `extractIntGrid` succeeds on both operands. -/
 theorem coeffOf_fromIntGrid_aMulKaratsubaInt {ex0 ey0 step : Rat} (_hstep : step > 0)

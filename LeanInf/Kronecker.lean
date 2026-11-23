@@ -621,6 +621,20 @@ private theorem lt_two_pow_succ_log2 (n : Nat) : n < 2 ^ (n.log2 + 1) := by
   · subst h0; decide
   · exact (Nat.log2_lt h0).mp (Nat.lt_succ_self n.log2)
 
+/-- Core Kronecker multiplication given precomputed `bound = min a.size b.size * maxAbs a * maxAbs b`
+    (eliminating duplicate `maxAbs` scans when called from `aMulIntFast`). -/
+@[inline] def aMulKroneckerCore (a b : Array Int) (bound : Nat) : Array Int :=
+  let outLen := a.size + b.size - 1
+  let halfBits := bound.log2 + 1
+  let bits := halfBits + 1
+  let half : Int := Int.ofNat (1 <<< halfBits)
+  let pa := packIntRange a bits 0 a.size
+  let pb := packIntRange b bits 0 b.size
+  let prod := pa * pb
+  let bias : Int := Int.ofNat ((repunit bits outLen) <<< halfBits)
+  let shifted := (prod + bias).toNat
+  unpackNatLoop bits half shifted outLen (Array.mkEmpty outLen)
+
 /-- **Verified Kronecker Substitution Multiplication (`Array Int × Array Int → Array Int`)**:
     Packs both polynomials at base `2^bits`, performs ONE GMP `Int.mul` (hitting GMP Toom/FFT),
     adds a doubling-computed bias repunit, and unpacks via shift-only divide-and-conquer. -/
@@ -630,18 +644,64 @@ def aMulKronecker (a b : Array Int) : Array Int :=
     let ma := maxAbs a
     let mb := maxAbs b
     if ma == 0 || mb == 0 then #[]
-    else
-      let outLen := a.size + b.size - 1
-      let bound := min a.size b.size * ma * mb
-      let halfBits := bound.log2 + 1
-      let bits := halfBits + 1
-      let half : Int := Int.ofNat (1 <<< halfBits)
-      let pa := packIntRange a bits 0 a.size
-      let pb := packIntRange b bits 0 b.size
-      let prod := pa * pb
-      let bias : Int := Int.ofNat ((repunit bits outLen) <<< halfBits)
-      let shifted := (prod + bias).toNat
-      unpackNatLoop bits half shifted outLen (Array.mkEmpty outLen)
+    else aMulKroneckerCore a b (min a.size b.size * ma * mb)
+
+private theorem aCoeff_aMulKroneckerCore (a b : Array Int) (hapos : a.size > 0) (hbpos : b.size > 0)
+    (k : Nat) :
+    aCoeff (aMulKroneckerCore a b (min a.size b.size * maxAbs a * maxAbs b)) k =
+      aCoeff (aMulSchoolbookInt a b) k := by
+  unfold aMulKroneckerCore
+  let outLen := a.size + b.size - 1
+  let bound := min a.size b.size * maxAbs a * maxAbs b
+  let halfBits := bound.log2 + 1
+  let bits := halfBits + 1
+  have hhalf_gt : bound < 2 ^ halfBits := lt_two_pow_succ_log2 bound
+  have hhalf_eq : Int.ofNat (1 <<< halfBits) = ((2 ^ halfBits : Nat) : Int) := by
+    rw [Nat.shiftLeft_eq, Nat.one_mul]; rfl
+  have hbits_pow : 2 ^ bits = 2 ^ halfBits + 2 ^ halfBits := by
+    dsimp only [bits]; rw [Nat.pow_succ]; omega
+  let c : Nat → Int := aCoeff (aMulSchoolbookInt a b)
+  let d : Nat → Nat := fun j => (c j + ((2 ^ halfBits : Nat) : Int)).toNat
+  have hd_lt : ∀ j, j < outLen → d j < 2 ^ bits := by
+    intro j _
+    have hcj : (c j).natAbs ≤ bound := natAbs_aMulSchoolbookInt_le a b j
+    dsimp only [d]
+    omega
+  have hd_cast : ∀ j, ((d j : Nat) : Int) = c j + ((2 ^ halfBits : Nat) : Int) := by
+    intro j
+    have hcj : (c j).natAbs ≤ bound := natAbs_aMulSchoolbookInt_le a b j
+    dsimp only [d]
+    omega
+  have hbias : Int.ofNat ((repunit bits outLen) <<< halfBits) =
+      ((2 ^ halfBits : Nat) : Int) * ((geomSum (2 ^ bits) outLen : Nat) : Int) := by
+    rw [repunit_eq, Nat.shiftLeft_eq, Nat.mul_comm]
+    exact Int.natCast_mul _ _
+  have hpack : packIntRange a bits 0 a.size * packIntRange b bits 0 b.size +
+        Int.ofNat ((repunit bits outLen) <<< halfBits) =
+      ((natEvalRange d (2 ^ bits) 0 outLen : Nat) : Int) := by
+    rw [packIntRange_eq, packIntRange_eq, ← evalRange_aMulSchoolbookInt hapos hbpos,
+        hbias, ← evalRange_ones_natCast, ← evalRange_const, ← evalRange_add]
+    rw [evalRange_congr (g := fun j => ((d j : Nat) : Int)) ((2 ^ bits : Nat) : Int) 0 outLen
+          (fun j _ => (hd_cast (0 + j)).symm)]
+    exact evalRange_natEvalRange d (2 ^ bits) 0 outLen
+  have htoNat : (packIntRange a bits 0 a.size * packIntRange b bits 0 b.size +
+        Int.ofNat ((repunit bits outLen) <<< halfBits)).toNat =
+      natEvalRange d (2 ^ bits) 0 outLen := by
+    rw [hpack]; exact Int.toNat_natCast _
+  change aCoeff (unpackNatLoop bits (Int.ofNat (1 <<< halfBits))
+      (packIntRange a bits 0 a.size * packIntRange b bits 0 b.size +
+        Int.ofNat ((repunit bits outLen) <<< halfBits)).toNat
+      outLen (Array.mkEmpty outLen)) k = c k
+  rw [hhalf_eq, htoNat, unpackNatLoop_spec bits ((2 ^ halfBits : Nat) : Int) d 0 outLen
+        (Array.mkEmpty outLen) (fun j hj => by simpa using hd_lt j hj) k]
+  have hsz0 : (Array.mkEmpty outLen : Array Int).size = 0 := rfl
+  simp only [hsz0, Nat.not_lt_zero, ↓reduceIte, Nat.zero_add, Nat.sub_zero]
+  by_cases hk : k < outLen
+  · simp only [hk, ↓reduceIte, hd_cast k]
+    omega
+  · simp only [hk, ↓reduceIte]
+    have hsz : (aMulSchoolbookInt a b).size = outLen := aMulSchoolbookInt_size hapos hbpos
+    exact (aCoeff_of_ge (by omega : (aMulSchoolbookInt a b).size ≤ k)).symm
 
 /-- **Kronecker Equivalence Theorem (zero `sorry`)**:
     `aMulKronecker a b` produces the exact same integer coefficient as `aMulSchoolbookInt a b`
@@ -669,66 +729,23 @@ theorem aCoeff_aMulKronecker (a b : Array Int) (k : Nat) :
       · rw [hmb] at hbd
         have hz : aCoeff (aMulSchoolbookInt a b) k = 0 := by simpa using hbd
         rw [hz]; rfl
-    · rename_i hnz
-      let outLen := a.size + b.size - 1
-      let bound := min a.size b.size * maxAbs a * maxAbs b
-      let halfBits := bound.log2 + 1
-      let bits := halfBits + 1
-      have hhalf_gt : bound < 2 ^ halfBits := lt_two_pow_succ_log2 bound
-      have hhalf_eq : Int.ofNat (1 <<< halfBits) = ((2 ^ halfBits : Nat) : Int) := by
-        rw [Nat.shiftLeft_eq, Nat.one_mul]; rfl
-      have hbits_pow : 2 ^ bits = 2 ^ halfBits + 2 ^ halfBits := by
-        dsimp only [bits]; rw [Nat.pow_succ]; omega
-      let c : Nat → Int := aCoeff (aMulSchoolbookInt a b)
-      let d : Nat → Nat := fun j => (c j + ((2 ^ halfBits : Nat) : Int)).toNat
-      have hd_lt : ∀ j, j < outLen → d j < 2 ^ bits := by
-        intro j _
-        have hcj : (c j).natAbs ≤ bound := natAbs_aMulSchoolbookInt_le a b j
-        dsimp only [d]
-        omega
-      have hd_cast : ∀ j, ((d j : Nat) : Int) = c j + ((2 ^ halfBits : Nat) : Int) := by
-        intro j
-        have hcj : (c j).natAbs ≤ bound := natAbs_aMulSchoolbookInt_le a b j
-        dsimp only [d]
-        omega
-      have hbias : Int.ofNat ((repunit bits outLen) <<< halfBits) =
-          ((2 ^ halfBits : Nat) : Int) * ((geomSum (2 ^ bits) outLen : Nat) : Int) := by
-        rw [repunit_eq, Nat.shiftLeft_eq, Nat.mul_comm]
-        exact Int.natCast_mul _ _
-      have hpack : packIntRange a bits 0 a.size * packIntRange b bits 0 b.size +
-            Int.ofNat ((repunit bits outLen) <<< halfBits) =
-          ((natEvalRange d (2 ^ bits) 0 outLen : Nat) : Int) := by
-        rw [packIntRange_eq, packIntRange_eq, ← evalRange_aMulSchoolbookInt hapos hbpos,
-            hbias, ← evalRange_ones_natCast, ← evalRange_const, ← evalRange_add]
-        rw [evalRange_congr (g := fun j => ((d j : Nat) : Int)) ((2 ^ bits : Nat) : Int) 0 outLen
-              (fun j _ => (hd_cast (0 + j)).symm)]
-        exact evalRange_natEvalRange d (2 ^ bits) 0 outLen
-      have htoNat : (packIntRange a bits 0 a.size * packIntRange b bits 0 b.size +
-            Int.ofNat ((repunit bits outLen) <<< halfBits)).toNat =
-          natEvalRange d (2 ^ bits) 0 outLen := by
-        rw [hpack]; exact Int.toNat_natCast _
-      change aCoeff (unpackNatLoop bits (Int.ofNat (1 <<< halfBits))
-          (packIntRange a bits 0 a.size * packIntRange b bits 0 b.size +
-            Int.ofNat ((repunit bits outLen) <<< halfBits)).toNat
-          outLen (Array.mkEmpty outLen)) k = c k
-      rw [hhalf_eq, htoNat, unpackNatLoop_spec bits ((2 ^ halfBits : Nat) : Int) d 0 outLen
-            (Array.mkEmpty outLen) (fun j hj => by simpa using hd_lt j hj) k]
-      have hsz0 : (Array.mkEmpty outLen : Array Int).size = 0 := rfl
-      simp only [hsz0, Nat.not_lt_zero, ↓reduceIte, Nat.zero_add, Nat.sub_zero]
-      by_cases hk : k < outLen
-      · simp only [hk, ↓reduceIte, hd_cast k]
-        omega
-      · simp only [hk, ↓reduceIte]
-        have hsz : (aMulSchoolbookInt a b).size = outLen := aMulSchoolbookInt_size hapos hbpos
-        exact (aCoeff_of_ge (by omega : (aMulSchoolbookInt a b).size ≤ k)).symm
+    · exact aCoeff_aMulKroneckerCore a b hapos hbpos k
 
-/-- Unified verified `Array Int` multiplier: dispatches to GMP Kronecker substitution strictly
-    in the multi-limb GMP regime (`min ≥ 16` and `maxAbs ≥ 2^18`, where scalar `Int.mul`
-    allocates GMP limbs), and keeps unboxed tagged-`Int` Karatsuba/schoolbook for small-int
-    dense products (`mul_dense`). -/
+/-- Unified verified `Array Int` multiplier: computes `bound = min(|a|, |b|) * max|a| * max|b|`
+    once and dispatches to GMP Kronecker substitution precisely at the `LEAN_MAX_SMALL_INT`
+    (`2^31 - 1`, `lean.h:1570`) product-overflow cliff (`min ≥ 16 && bound ≥ 2^30`), while
+    keeping unboxed tagged-`Int` Karatsuba/schoolbook for small-int dense products. -/
 def aMulIntFast (cutoff : Nat := 32) (a b : Array Int) : Array Int :=
-  if min a.size b.size ≥ 16 && (maxAbs a ≥ (1 <<< 18) || maxAbs b ≥ (1 <<< 18)) then
-    aMulKronecker a b
+  if min a.size b.size ≥ 24 then
+    let ma := maxAbs a
+    let mb := maxAbs b
+    if ma == 0 || mb == 0 then #[]
+    else
+      let bound := min a.size b.size * ma * mb
+      if bound ≥ (1 <<< 30) then
+        aMulKroneckerCore a b bound
+      else
+        aMulKaratsubaInt cutoff a b
   else
     aMulKaratsubaInt cutoff a b
 
@@ -738,11 +755,213 @@ theorem aCoeff_aMulIntFast (cutoff : Nat) (a b : Array Int) (k : Nat) :
       dCoeff (dMulSchoolbook (a.toList.map Rat.ofInt) (b.toList.map Rat.ofInt)) k := by
   unfold aMulIntFast
   split
-  · rw [aCoeff_aMulKronecker]; exact aCoeff_aMulSchoolbookInt a b k
+  · rename_i hmin
+    have hapos : a.size > 0 := by omega
+    have hbpos : b.size > 0 := by omega
+    dsimp only
+    split
+    · rename_i hzero
+      simp only [Bool.or_eq_true, beq_iff_eq] at hzero
+      have hbd := natAbs_aMulSchoolbookInt_le a b k
+      have hz : aCoeff (aMulSchoolbookInt a b) k = 0 := by
+        rcases hzero with hma | hmb
+        · rw [hma] at hbd; simpa using hbd
+        · rw [hmb] at hbd; simpa using hbd
+      rw [← aCoeff_aMulSchoolbookInt a b k, hz]
+      rfl
+    · split
+      · rw [aCoeff_aMulKroneckerCore a b hapos hbpos k]
+        exact aCoeff_aMulSchoolbookInt a b k
+      · exact aCoeff_aMulKaratsubaInt cutoff a b k
   · exact aCoeff_aMulKaratsubaInt cutoff a b k
 
 /-- Verified top-level `TermList` multiplication combining Kronecker GMP, unboxed `Array Int`
     Karatsuba/schoolbook, rational Karatsuba, and contiguous-`Array` sparse `mulTree`. -/
+private theorem dCoeff_map_mkRat (arr : Array Int) (dc : Nat) (k : Nat) :
+    dCoeff (arr.toList.map (fun c => mkRat c dc)) k = mkRat (aCoeff arr k) dc := by
+  unfold dCoeff aCoeff
+  rw [List.getD_eq_getElem?_getD]
+  split
+  · rename_i h
+    have h1 : k < (arr.toList.map (fun c => mkRat c dc)).length := by simpa using h
+    rw [List.getElem?_eq_getElem h1]; simp
+  · rename_i h
+    have h1 : (arr.toList.map (fun c => mkRat c dc)).length ≤ k := by simp at h ⊢; omega
+    rw [List.getElem?_eq_none h1]
+    simp
+
+private theorem map_mkRat_eq_dScale (arr : Array Int) (dc : Nat) :
+    arr.toList.map (fun c => mkRat c dc) = dScale (mkRat 1 dc) (arr.toList.map Rat.ofInt) := by
+  unfold dScale
+  rw [List.map_map]
+  apply List.map_congr_left
+  intro c _
+  simp only [Function.comp_apply, TermList.ratMulFast_eq, ← TermList.mkRat_one c, Rat.mkRat_mul_mkRat,
+    Int.one_mul, Nat.mul_one]
+
+/-- Coefficient specification bridging scaled `aMulIntFast` to `mulNaiveTerms`. -/
+theorem coeffOf_fromScaledIntGrid_aMulIntFast {ex0 ey0 step : Rat} {dcx dcy : Nat}
+    (hdcx : dcx ≠ 0) (hdcy : dcy ≠ 0) {xs ys : TermList} {ia ib : Array Int}
+    (hx : ∀ e, TermList.coeffOf (fromGrid ex0 step (ia.toList.map (fun c => mkRat c dcx))) e =
+      TermList.coeffOf xs e)
+    (hy : ∀ e, TermList.coeffOf (fromGrid ey0 step (ib.toList.map (fun c => mkRat c dcy))) e =
+      TermList.coeffOf ys e) (e : Rat) :
+    TermList.coeffOf
+        (fromScaledIntGrid (TermList.ratAddFast ex0 ey0) step (dcx * dcy) (aMulIntFast 32 ia ib)) e =
+      TermList.coeffOf (TermList.mulNaiveTerms xs ys) e := by
+  have hdcp : dcx * dcy ≠ 0 := Nat.mul_ne_zero hdcx hdcy
+  rw [TermList.ratAddFast_eq, fromScaledIntGrid_eq_fromGrid _ _ hdcp]
+  unfold fromGrid
+  have hcongr : ∀ k,
+      dCoeff ((aMulIntFast 32 ia ib).toList.map (fun c => mkRat c (dcx * dcy))) k =
+      dCoeff (dMulSchoolbook (ia.toList.map (fun c => mkRat c dcx))
+                             (ib.toList.map (fun c => mkRat c dcy))) k := by
+    intro k
+    rw [dCoeff_map_mkRat, map_mkRat_eq_dScale ia dcx, map_mkRat_eq_dScale ib dcy,
+        dCoeff_dMulSchoolbook_scale_left, dCoeff_dMulSchoolbook_scale_right,
+        ← aCoeff_aMulIntFast 32 ia ib k, ← TermList.mkRat_one (aCoeff (aMulIntFast 32 ia ib) k),
+        ← Rat.mul_assoc, Rat.mkRat_mul_mkRat, Rat.mkRat_mul_mkRat]
+    simp
+  rw [coeffOf_fromGridAux_congr 0 hcongr e, coeffOf_fromGridAux_dMulSchoolbook]
+  rw [TermList.coeffOf_mulNaiveTerms_congr_left (fun e' => by simpa [fromGrid] using hx e'),
+      TermList.coeffOf_mulNaiveTerms_congr_right (fun e' => by simpa [fromGrid] using hy e')]
+
+/-- Verified rational dense multiplication via bounded-LCM coefficient denominator clearing
+    (`dcx, dcy ≤ 2^128`), dispatching directly into `aMulIntFast 32` (unboxed `Array Int`
+    Karatsuba + multi-limb Kronecker GMP) and normalizing once during backwards reconstruction. -/
+def mulRationalDense (ex0 ey0 step : Rat) (fuel cutoff : Nat) (xs ys : TermList)
+    (oa : Option (Array Int) := none) : TermList :=
+  let maxRatDen : Nat := 1 <<< 128
+  match oa with
+  | some ia =>
+    let dcy := TermList.scanCoeffLcm maxRatDen ys 1
+    if dcy != 0 then
+      match extractScaledIntGrid ey0 step dcy fuel ys with
+      | some ib =>
+        fromScaledIntGrid (TermList.ratAddFast ex0 ey0) step dcy (aMulIntFast 32 ia ib)
+      | none => TermList.mulTree xs ys
+    else if xs.length ≥ cutoff && ys.length ≥ cutoff then
+      match extractGridAux ex0 step 0 fuel xs, extractGridAux ey0 step 0 fuel ys with
+      | some da, some db =>
+        fromGrid (TermList.ratAddFast ex0 ey0) step (dMulKaratsuba cutoff da db)
+      | _, _ => TermList.mulTree xs ys
+    else TermList.mulTree xs ys
+  | none =>
+    let dcx := TermList.scanCoeffLcm maxRatDen xs 1
+    let dcy := TermList.scanCoeffLcm maxRatDen ys 1
+    if dcx != 0 && dcy != 0 then
+      match extractScaledIntGrid ex0 step dcx fuel xs with
+      | some ia =>
+        match extractScaledIntGrid ey0 step dcy fuel ys with
+        | some ib =>
+          fromScaledIntGrid (TermList.ratAddFast ex0 ey0) step (dcx * dcy) (aMulIntFast 32 ia ib)
+        | none => TermList.mulTree xs ys
+      | none => TermList.mulTree xs ys
+    else if xs.length ≥ cutoff && ys.length ≥ cutoff then
+      match extractGridAux ex0 step 0 fuel xs, extractGridAux ey0 step 0 fuel ys with
+      | some da, some db =>
+        fromGrid (TermList.ratAddFast ex0 ey0) step (dMulKaratsuba cutoff da db)
+      | _, _ => TermList.mulTree xs ys
+    else TermList.mulTree xs ys
+
+private theorem mulRationalDense_wf {ex0 ey0 step : Rat} (hstep : step > 0) (fuel cutoff : Nat)
+    {xs ys : TermList} (hxs : TermList.WF xs) (hys : TermList.WF ys) (oa : Option (Array Int)) :
+    TermList.WF (mulRationalDense ex0 ey0 step fuel cutoff xs ys oa) := by
+  unfold mulRationalDense
+  dsimp only
+  cases oa with
+  | some ia =>
+    dsimp only
+    split
+    · rename_i hdcy
+      have hdcy' : TermList.scanCoeffLcm (1 <<< 128) ys 1 ≠ 0 := by simpa using hdcy
+      split
+      · exact fromScaledIntGrid_wf hstep hdcy' _
+      · exact TermList.mulTree_wf hxs hys
+    · split
+      · split
+        · exact fromGrid_wf hstep _
+        · exact TermList.mulTree_wf hxs hys
+      · exact TermList.mulTree_wf hxs hys
+  | none =>
+    dsimp only
+    split
+    · rename_i hdc
+      simp only [Bool.and_eq_true, bne_iff_ne] at hdc
+      have hdcp : TermList.scanCoeffLcm (1 <<< 128) xs 1 *
+          TermList.scanCoeffLcm (1 <<< 128) ys 1 ≠ 0 := Nat.mul_ne_zero hdc.1 hdc.2
+      split
+      · split
+        · exact fromScaledIntGrid_wf hstep hdcp _
+        · exact TermList.mulTree_wf hxs hys
+      · exact TermList.mulTree_wf hxs hys
+    · split
+      · split
+        · exact fromGrid_wf hstep _
+        · exact TermList.mulTree_wf hxs hys
+      · exact TermList.mulTree_wf hxs hys
+
+private theorem coeffOf_mulRationalDense {ex0 ey0 step : Rat} (hstep : step > 0)
+    (fuel cutoff : Nat) (xs ys : TermList) (oa : Option (Array Int))
+    (hoa : ∀ ia, oa = some ia → extractIntGrid ex0 step fuel xs = some ia) (e : Rat) :
+    TermList.coeffOf (mulRationalDense ex0 ey0 step fuel cutoff xs ys oa) e =
+      TermList.coeffOf (TermList.mulNaiveTerms xs ys) e := by
+  unfold mulRationalDense
+  dsimp only
+  cases oa with
+  | some ia =>
+    dsimp only
+    split
+    · rename_i hdcy
+      have hdcy' : TermList.scanCoeffLcm (1 <<< 128) ys 1 ≠ 0 := by simpa using hdcy
+      have ⟨_, hys_cdvd⟩ := TermList.scanCoeffLcm_dvd (1 <<< 128) ys 1 _ (by decide) rfl hdcy'
+      split
+      · rename_i ib hib
+        have hx_int := hoa ia rfl
+        have hx_sound : ∀ e', TermList.coeffOf (fromGrid ex0 step (ia.toList.map (fun c => mkRat c 1))) e' =
+            TermList.coeffOf xs e' := by
+          intro e'
+          have hmap : ia.toList.map (fun c => mkRat c 1) = ia.toList.map Rat.ofInt := by
+            apply List.map_congr_left; intro c _; exact TermList.mkRat_one c
+          rw [hmap]; exact extractIntGrid_sound hx_int e'
+        have hy_sound := extractScaledIntGrid_sound hdcy' hys_cdvd hib
+        have hres := coeffOf_fromScaledIntGrid_aMulIntFast (by decide : (1 : Nat) ≠ 0) hdcy' hx_sound hy_sound e
+        simpa [Nat.one_mul] using hres
+      · exact TermList.coeffOf_mulTree _ _ e
+    · split
+      · split
+        · rename_i da db hx' hy'
+          rw [TermList.ratAddFast_eq]
+          exact coeffOf_fromGrid_dMulKaratsuba hstep cutoff hx' hy' e
+        · exact TermList.coeffOf_mulTree _ _ e
+      · exact TermList.coeffOf_mulTree _ _ e
+  | none =>
+    dsimp only
+    split
+    · rename_i hdc
+      simp only [Bool.and_eq_true, bne_iff_ne] at hdc
+      rcases hdc with ⟨hdcx, hdcy⟩
+      have ⟨_, hxs_cdvd⟩ := TermList.scanCoeffLcm_dvd (1 <<< 128) xs 1 _ (by decide) rfl hdcx
+      have ⟨_, hys_cdvd⟩ := TermList.scanCoeffLcm_dvd (1 <<< 128) ys 1 _ (by decide) rfl hdcy
+      split
+      · rename_i ia hia
+        split
+        · rename_i ib hib
+          exact coeffOf_fromScaledIntGrid_aMulIntFast hdcx hdcy
+            (extractScaledIntGrid_sound hdcx hxs_cdvd hia)
+            (extractScaledIntGrid_sound hdcy hys_cdvd hib) e
+        · exact TermList.coeffOf_mulTree _ _ e
+      · exact TermList.coeffOf_mulTree _ _ e
+    · split
+      · split
+        · rename_i da db hx' hy'
+          rw [TermList.ratAddFast_eq]
+          exact coeffOf_fromGrid_dMulKaratsuba hstep cutoff hx' hy' e
+        · exact TermList.coeffOf_mulTree _ _ e
+      · exact TermList.coeffOf_mulTree _ _ e
+
+/-- Verified top-level `TermList` multiplication combining Kronecker GMP, unboxed `Array Int`
+    Karatsuba/schoolbook, denominator-cleared rational dense grids, and scaled-SOA sparse `mulTree`. -/
 def mulFastKronecker (xs ys : TermList) (cutoff : Nat := 16) : TermList :=
   if xs.length ≥ 4 && ys.length ≥ 4 then
     match xs, ys, guessGridStep xs ys with
@@ -755,20 +974,10 @@ def mulFastKronecker (xs ys : TermList) (cutoff : Nat := 16) : TermList :=
           | .ok ib =>
             fromIntGrid (TermList.ratAddFast ex0 ey0) step (aMulIntFast 32 ia ib)
           | .nonInt =>
-            if xs.length ≥ cutoff && ys.length ≥ cutoff then
-              match extractGridAux ex0 step 0 fuel xs, extractGridAux ey0 step 0 fuel ys with
-              | some da, some db =>
-                fromGrid (TermList.ratAddFast ex0 ey0) step (dMulKaratsuba cutoff da db)
-              | _, _ => TermList.mulTree xs ys
-            else TermList.mulTree xs ys
+            mulRationalDense ex0 ey0 step fuel cutoff xs ys (some ia)
           | .offGrid => TermList.mulTree xs ys
         | .nonInt =>
-          if xs.length ≥ cutoff && ys.length ≥ cutoff then
-            match extractGridAux ex0 step 0 fuel xs, extractGridAux ey0 step 0 fuel ys with
-            | some da, some db =>
-              fromGrid (TermList.ratAddFast ex0 ey0) step (dMulKaratsuba cutoff da db)
-            | _, _ => TermList.mulTree xs ys
-          else TermList.mulTree xs ys
+          mulRationalDense ex0 ey0 step fuel cutoff xs ys none
         | .offGrid => TermList.mulTree xs ys
       else TermList.mulTree xs ys
     | _, _, _ => TermList.mulTree xs ys
@@ -787,23 +996,15 @@ theorem mulFastKronecker_wf {xs ys : TermList} (hxs : TermList.WF xs) (hys : Ter
         split
         · split
           · exact fromIntGrid_wf hstep _
-          · split
-            · split
-              · exact fromGrid_wf hstep _
-              · exact TermList.mulTree_wf hxs hys
-            · exact TermList.mulTree_wf hxs hys
+          · exact mulRationalDense_wf hstep _ cutoff hxs hys _
           · exact TermList.mulTree_wf hxs hys
-        · split
-          · split
-            · exact fromGrid_wf hstep _
-            · exact TermList.mulTree_wf hxs hys
-          · exact TermList.mulTree_wf hxs hys
+        · exact mulRationalDense_wf hstep _ cutoff hxs hys _
         · exact TermList.mulTree_wf hxs hys
       · exact TermList.mulTree_wf hxs hys
     · exact TermList.mulTree_wf hxs hys
   · exact TermList.mulTree_wf hxs hys
 
-/-- **Unified Kronecker+Karatsuba+Sparse Multiplication Equivalence Theorem (zero `sorry`)**. -/
+/-- **Unified Kronecker+Karatsuba+RationalClearing+Sparse Multiplication Equivalence Theorem (zero `sorry`)**. -/
 theorem coeffOf_mulFastKronecker (xs ys : TermList) (e : Rat) (cutoff : Nat := 16) :
     TermList.coeffOf (mulFastKronecker xs ys cutoff) e =
       TermList.coeffOf (TermList.mulNaiveTerms xs ys) e := by
@@ -840,21 +1041,10 @@ theorem coeffOf_mulFastKronecker (xs ys : TermList) (e : Rat) (cutoff : Nat := 1
             rw [coeffOf_fromGridAux_congr 0 hcongr e, coeffOf_fromGridAux_dMulSchoolbook]
             rw [TermList.coeffOf_mulNaiveTerms_congr_left (fun e' => by simpa [fromGrid] using extractIntGrid_sound hx e'),
                 TermList.coeffOf_mulNaiveTerms_congr_right (fun e' => by simpa [fromGrid] using extractIntGrid_sound hy e')]
-          · split
-            · split
-              · rename_i da db hx' hy'
-                rw [TermList.ratAddFast_eq]
-                exact coeffOf_fromGrid_dMulKaratsuba hstep cutoff hx' hy' e
-              · exact TermList.coeffOf_mulTree _ _ e
-            · exact TermList.coeffOf_mulTree _ _ e
+          · exact coeffOf_mulRationalDense hstep _ cutoff _ _ (some ia)
+              (fun _ heq => by cases heq; exact hx) e
           · exact TermList.coeffOf_mulTree _ _ e
-        · split
-          · split
-            · rename_i da db hx' hy'
-              rw [TermList.ratAddFast_eq]
-              exact coeffOf_fromGrid_dMulKaratsuba hstep cutoff hx' hy' e
-            · exact TermList.coeffOf_mulTree _ _ e
-          · exact TermList.coeffOf_mulTree _ _ e
+        · exact coeffOf_mulRationalDense hstep _ cutoff _ _ none (fun _ heq => by cases heq) e
         · exact TermList.coeffOf_mulTree _ _ e
       · exact TermList.coeffOf_mulTree _ _ e
     · exact TermList.coeffOf_mulTree _ _ e
