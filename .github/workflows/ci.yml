@@ -7,31 +7,269 @@ on:
     branches: ["main"]
   workflow_dispatch:  # Allow manual triggering
 
-
 jobs:
   build:
-    name: Build and Test
+    name: Build, Verify, and Test
     runs-on: ubuntu-latest
-    
+
     steps:
-    - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-    - name: Install elan
-      run: |
-        set -o pipefail
-        curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- --default-toolchain leanprover/lean4:v4.10.0-rc1 -y
-        echo "$HOME/.elan/bin" >> $GITHUB_PATH
+      - name: Install elan
+        run: |
+          set -euo pipefail
+          curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- --default-toolchain none -y
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+          "$HOME/.elan/bin/lean" --version
 
-    - name: Cache .lake
-      uses: actions/cache@v3
-      with:
-        path: .lake
-        key: ${{ runner.os }}-lake-${{ hashFiles('**/lakefile.lean') }}
-        restore-keys: |
-          ${{ runner.os }}-lake-
+      - name: Cache .lake
+        uses: actions/cache@v4
+        with:
+          path: .lake
+          key: ${{ runner.os }}-lake-${{ hashFiles('lean-toolchain', 'lakefile.lean', 'lake-manifest.json') }}
+          restore-keys: |
+            ${{ runner.os }}-lake-
 
-    - name: Build project
-      run: lake build
+      - name: Build project (zero warnings)
+        run: |
+          set -euo pipefail
+          lake build 2>&1 | tee build.log
+          python3 - <<'PY'
+          import re, sys
+          log = open("build.log", encoding="utf-8").read()
+          warnings = [line for line in log.splitlines() if re.search(r"(^|\s)warning:", line)]
+          if warnings:
+              print("ERROR: lake build produced warnings:")
+              for w in warnings:
+                  print(" ", w)
+              sys.exit(1)
+          print("lake build clean (0 warnings).")
+          PY
 
-    - name: Run tests
-      run: lake exe test
+      - name: Run test suite
+        run: lake exe inf test
+
+      - name: Check active Lean files for trust escapes
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib, re, sys
+
+          root_file = pathlib.Path("LeanInf.lean")
+          files = [root_file, pathlib.Path("Main.lean")]
+          for line in root_file.read_text(encoding="utf-8").splitlines():
+              m = re.match(r"^\s*import\s+(LeanInf\.[A-Za-z0-9_.]+)", line)
+              if m:
+                  mod_path = pathlib.Path(*m.group(1).split(".")).with_suffix(".lean")
+                  files.append(mod_path)
+
+          def strip_comments_and_strings(src: str) -> str:
+              out = []
+              i = 0
+              n = len(src)
+              block_depth = 0
+              in_line_comment = False
+              in_str = False
+              while i < n:
+                  ch = src[i]
+                  nxt = src[i + 1] if i + 1 < n else ""
+                  if in_line_comment:
+                      if ch == "\n":
+                          in_line_comment = False
+                          out.append("\n")
+                      i += 1
+                      continue
+                  if block_depth > 0:
+                      if ch == "/" and nxt == "-":
+                          block_depth += 1
+                          i += 2
+                      elif ch == "-" and nxt == "/":
+                          block_depth -= 1
+                          i += 2
+                      else:
+                          if ch == "\n":
+                              out.append("\n")
+                          i += 1
+                      continue
+                  if in_str:
+                      if ch == "\\" and i + 1 < n:
+                          i += 2
+                      elif ch == '"':
+                          in_str = False
+                          out.append('""')
+                          i += 1
+                      else:
+                          if ch == "\n":
+                              out.append("\n")
+                          i += 1
+                      continue
+                  if ch == "-" and nxt == "-":
+                      in_line_comment = True
+                      i += 2
+                      continue
+                  if ch == "/" and nxt == "-":
+                      block_depth = 1
+                      i += 2
+                      continue
+                  if ch == "'":
+                      prev = src[i - 1] if i > 0 else " "
+                      if not (prev.isalnum() or prev in "_'"):
+                          if i + 3 < n and nxt == "\\" and src[i + 3] == "'":
+                              i += 4
+                              continue
+                          if i + 2 < n and nxt != "'" and nxt != "\n" and src[i + 2] == "'":
+                              i += 3
+                              continue
+                  if ch == '"':
+                      in_str = True
+                      i += 1
+                      continue
+                  out.append(ch)
+                  i += 1
+              return "".join(out)
+
+          patterns = [
+              ("sorry", re.compile(r"\bsorry\b")),
+              ("@[extern]", re.compile(r"@\[[^\]]*\bextern\b")),
+              ("@[implemented_by]", re.compile(r"@\[[^\]]*\bimplemented_by\b")),
+              ("native_decide", re.compile(r"\bnative_decide\b")),
+              ("unsafe", re.compile(r"\bunsafe\b")),
+              ("axiom", re.compile(r"\baxiom\s+")),
+          ]
+
+          violations = []
+          for p in files:
+              if not p.exists():
+                  violations.append(f"Missing active file: {p}")
+                  continue
+              stripped = strip_comments_and_strings(p.read_text(encoding="utf-8"))
+              for lineno, line in enumerate(stripped.splitlines(), start=1):
+                  for label, pat in patterns:
+                      if pat.search(line):
+                          violations.append(f"{p}:{lineno}: forbidden {label}: {line.strip()}")
+
+          if violations:
+              print("ERROR: trust-escape check failed:")
+              for v in violations:
+                  print(" ", v)
+              sys.exit(1)
+          print(f"Trust-escape check clean across {len(files)} active Lean files.")
+          PY
+
+      - name: "Verify #print axioms (VerifiedRefactor, Instances, Grind)"
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import re, subprocess, sys
+
+          lean_src = """
+          import LeanInf.VerifiedRefactor
+          import LeanInf.Instances
+          import LeanInf.Grind
+
+          #print axioms LeanInf.FastLC.coeff_eq_coeffWF
+          #print axioms LeanInf.FastLC.mul_eq_mulNaive
+          #print axioms LeanInf.FastLC.mulSparse_eq_mulNaive
+          #print axioms LeanInf.FastLC.powFast_eq_powNaive
+          #print axioms LeanInf.FastLC.newton_order_doubles
+          #print axioms LeanInf.TermList.compareFast_eq_signum_sub
+          #print axioms LeanInf.FastLC.signum_mul
+          #print axioms LeanInf.FastLC.mul_eq_zero_iff
+          #print axioms LeanInf.FastLC.ofRat_injective
+          #print axioms LeanInf.FastLC.grind_H_mul_eps_add_one
+          #print axioms LeanInf.FastLC.newton_residual_squares_grind
+          """
+
+          proc = subprocess.run(
+              ["lake", "env", "lean", "--stdin"],
+              input=lean_src,
+              text=True,
+              capture_output=True,
+              check=False,
+          )
+          print(proc.stdout)
+          if proc.stderr:
+              print(proc.stderr, file=sys.stderr)
+          if proc.returncode != 0:
+              sys.exit(proc.returncode)
+
+          allowed = {"propext", "Classical.choice", "Quot.sound"}
+          checked = 0
+          for line in proc.stdout.splitlines():
+              line = line.strip()
+              if not line:
+                  continue
+              if "does not depend on any axioms" in line:
+                  checked += 1
+                  continue
+              m = re.match(r"^'([^']+)' depends on axioms: \[([^\]]*)\]$", line)
+              if m:
+                  thm = m.group(1)
+                  axioms = {a.strip() for a in m.group(2).split(",") if a.strip()}
+                  bad = axioms - allowed
+                  if bad:
+                      print(f"ERROR: {thm} uses disallowed axioms: {sorted(bad)}")
+                      sys.exit(1)
+                  checked += 1
+          if checked < 11:
+              print(f"ERROR: expected 11 #print axioms lines, checked {checked}")
+              sys.exit(1)
+          print(f"Axiom check clean: {checked} theorems depend only on {sorted(allowed)}.")
+          PY
+
+      - name: CLI JSON smoke checks
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, math, subprocess, sys
+
+          def eval_json(expr: str):
+              proc = subprocess.run(
+                  ["lake", "exe", "inf", "eval", expr, "--json"],
+                  text=True,
+                  capture_output=True,
+                  check=True,
+              )
+              data = json.loads(proc.stdout)
+              assert data.get("ok") is True, f"{expr}: not ok: {data}"
+              return data
+
+          d1 = eval_json("1/(1+exp(-Hx))")
+          assert d1["kind"] == "fn", d1
+          assert d1["var"] == "x", d1
+          assert d1["plot_decision"] == "plot", d1
+          assert d1["scale_hint"] == "linear", d1
+          assert len(d1["plot"]["points"]) >= 100, d1
+
+          d2 = eval_json("dstep(0)")
+          assert d2["kind"] == "num", d2
+          assert d2["plot_decision"] == "finite_projection", d2
+          assert len(d2["plot"]["scale_curve"]) >= 10, d2
+
+          d3 = eval_json("H^2")
+          assert d3["kind"] == "num", d3
+          assert d3["plot_decision"] == "finite_projection", d3
+          assert d3["scale_hint"] == "loglog", d3
+          assert math.isclose(d3["plot"]["finite_y"], 10000.0, rel_tol=1e-9), d3
+          assert len(d3["plot"]["scale_curve"]) >= 20, d3
+
+          d4 = eval_json("x^2 + y^2")
+          assert d4["kind"] == "fn2", d4
+          assert d4["vars"] == ["x", "y"], d4
+          assert d4["grid_size"] == 21, d4
+          assert len(d4["values"]) == 441, d4
+          assert len(d4["probes"]) == 6, d4
+          assert d4["plot_decision"] == "plot", d4
+
+          d5 = eval_json("x + y + z")
+          assert d5["kind"] == "fn3", d5
+          assert d5["vars"] == ["x", "y", "z"], d5
+          assert d5["grid_size"] == 13, d5
+          assert len(d5["slice_values"]) == 9, d5
+          assert len(d5["slices"]) == 9, d5
+          assert all(len(s) == 169 for s in d5["slices"]), d5
+          assert len(d5["probes"]) == 6, d5
+          assert d5["plot_decision"] == "plot", d5
+
+          print("All 5 CLI JSON smoke checks passed.")
+          PY

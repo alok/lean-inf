@@ -325,7 +325,7 @@ mutual
 end
 
 private def builtinIdentNames : List String :=
-  [ "H", "h", "ε", "eps", "d", "pi", "π", "e", "x"
+  [ "H", "h", "ε", "eps", "d", "pi", "π", "e", "x", "y", "z"
   , "sin", "cos", "tan", "exp", "ln", "log", "sqrt", "abs", "std"
   , "sign", "signum", "lead", "order", "coeff", "trunc", "eval"
   , "step", "dstep", "ddstep", "diff", "deriv"
@@ -340,7 +340,7 @@ private def splitGluedMathIdent (s : String) : Option (List String) :=
       | 'e' :: 'p' :: 's' :: rest => go ("eps" :: acc) rest
       | 'p' :: 'i' :: rest => go ("pi" :: acc) rest
       | c :: rest =>
-        if c == 'H' || c == 'h' || c == 'ε' || c == 'π' || c == 'x' || c == 'd' then
+        if c == 'H' || c == 'h' || c == 'ε' || c == 'π' || c == 'x' || c == 'y' || c == 'z' || c == 'd' then
           go (String.singleton c :: acc) rest
         else
           none
@@ -802,14 +802,24 @@ end
 def hasFreeVar (e : Expr) (v : String := "x") : Bool :=
   hasFreeVarAux v [] e
 
+-- TODO: add t later
+private def plotVarCandidates : List String := ["x", "y", "z"]
+
+/-- Collect distinct free plotting variables from `["x", "y", "z"]` in canonical order (`x`, `y`, `z`). -/
+def freePlotVars (e : Expr) : List String :=
+  plotVarCandidates.filter fun v => hasFreeVar e v
+
+private def isFiniteFloat (f : Float) : Bool :=
+  !f.isNaN && !f.isInf
+
 private structure FloatEnv where
   vars : Std.HashMap String Float
   fns : Std.HashMap String (String × Expr)
   bigN : Float
 
-private def defaultFloatEnv (bigN : Float) (xVal : Float) : FloatEnv :=
-  let effN := if bigN > 0.0 then bigN else 100.0
-  let m : Std.HashMap String Float := Std.HashMap.emptyWithCapacity
+private def defaultFloatEnvVars (bigN : Float) (bindings : List (String × Float)) : FloatEnv :=
+  let effN := if isFiniteFloat bigN && bigN > 0.0 then bigN else 100.0
+  let base : Std.HashMap String Float := Std.HashMap.emptyWithCapacity
     |>.insert "H" effN
     |>.insert "h" effN
     |>.insert "ε" (1.0 / effN)
@@ -818,11 +828,8 @@ private def defaultFloatEnv (bigN : Float) (xVal : Float) : FloatEnv :=
     |>.insert "pi" 3.141592653589793
     |>.insert "π" 3.141592653589793
     |>.insert "e" 2.718281828459045
-    |>.insert "x" xVal
+  let m := bindings.foldl (init := base) fun acc (k, v) => acc.insert k v
   { vars := m, fns := Std.HashMap.emptyWithCapacity, bigN := effN }
-
-private def isFiniteFloat (f : Float) : Bool :=
-  !f.isNaN && !f.isInf
 
 private partial def evalExprFloatAux (fEnv : FloatEnv) : Expr → Option (Float × FloatEnv)
   | .lit v => some (v.evalFinite fEnv.bigN, fEnv)
@@ -946,11 +953,16 @@ private partial def evalExprFloatAux (fEnv : FloatEnv) : Expr → Option (Float 
         | none => none
       | _, _ => none
 
-/-- Fast native `Float` evaluator for plotting an `Expr` at `H ↦ bigN`, `ε ↦ 1/bigN`, `x ↦ xVal`. -/
-def evalExprFloat (expr : Expr) (bigN : Float) (xVal : Float) : Option Float :=
-  match evalExprFloatAux (defaultFloatEnv bigN xVal) expr with
+/-- Fast native `Float` evaluator for plotting an `Expr` at `H ↦ bigN`, `ε ↦ 1/bigN`, and arbitrary
+    free variable bindings `bindings`. -/
+def evalExprFloatVars (expr : Expr) (bigN : Float) (bindings : List (String × Float)) : Option Float :=
+  match evalExprFloatAux (defaultFloatEnvVars bigN bindings) expr with
   | some (y, _) => if isFiniteFloat y then some y else none
   | none => none
+
+/-- Fast native `Float` evaluator for plotting an `Expr` at `H ↦ bigN`, `ε ↦ 1/bigN`, `x ↦ xVal`. -/
+def evalExprFloat (expr : Expr) (bigN : Float) (xVal : Float) : Option Float :=
+  evalExprFloatVars expr bigN [("x", xVal)]
 
 private def cleanFloat (x : Float) : Float :=
   if x == 0.0 then 0.0 else x
@@ -1000,6 +1012,130 @@ private def jsonFloatOrNull (f : Float) : String :=
 private def formatPointsJson (pts : Array (Float × Float)) : String :=
   "[" ++ String.intercalate "," (pts.toList.map fun (x, y) => s!"[{cleanFloat x},{cleanFloat y}]") ++ "]"
 
+private def formatOptFloatArrayJson (vals : Array (Option Float)) : String :=
+  "[" ++ String.intercalate "," (vals.toList.map fun v =>
+    match v with
+    | some f => jsonFloatOrNull f
+    | none => "null") ++ "]"
+
+private def formatStringArrayJson (xs : List String) : String :=
+  "[" ++ String.intercalate "," (xs.map fun s => s!"\"{escapeJsonStr s}\"") ++ "]"
+
+private def scaleHintForCurve (pts : Array (Float × Float)) : String :=
+  if pts.size < 2 then "linear"
+  else
+    let ys := pts.map Prod.snd
+    let allPos := ys.all fun y => y > 0.0
+    if allPos then
+      let sorted := ys.qsort (fun a b => a < b)
+      let lo := sorted[0]!
+      let hi := sorted[sorted.size - 1]!
+      if lo > 0.0 && hi / lo ≥ 1000.0 then "loglog" else "linear"
+    else
+      let posAbs := (ys.filterMap fun y =>
+        let a := y.abs
+        if a > 0.0 then some a else none).qsort (fun a b => a < b)
+      if posAbs.isEmpty then "linear"
+      else
+        let lo := posAbs[0]!
+        let hi := posAbs[posAbs.size - 1]!
+        if hi / lo ≥ 1000.0 then "symlog" else "linear"
+
+private def scaleHintForMacro (pts : Array (Float × Float)) : String :=
+  if pts.size < 2 then "linear"
+  else
+    let ys := pts.map Prod.snd
+    let maxAbs := ys.foldl (init := 0.0) fun m y => max m y.abs
+    if maxAbs == 0.0 then "linear"
+    else
+      let zeroFloor := maxAbs * 1e-9
+      let allStrictlyPosY := ys.all fun y => y > zeroFloor
+      let allPosX := pts.all fun (x, _) => x > 0.0
+      let sigAbs := (ys.filterMap fun y =>
+        let a := y.abs
+        if a > zeroFloor then some a else none).qsort (fun a b => a < b)
+      if sigAbs.isEmpty then "linear"
+      else
+        let minSig := sigAbs[0]!
+        let medSig := sigAbs[sigAbs.size / 2]!
+        if allStrictlyPosY && (maxAbs / max minSig 1e-15) ≥ 1000.0 then
+          if allPosX then
+            let xs := (pts.map Prod.fst).qsort (fun a b => a < b)
+            let minX := xs[0]!
+            let maxX := xs[xs.size - 1]!
+            if maxX / max minX 1e-15 ≥ 100.0 then "loglog" else "symlog"
+          else "symlog"
+        else if (maxAbs / max medSig 1e-6) ≥ 1000.0 then
+          "symlog"
+        else
+          "linear"
+
+private def scaleHintForValues (vals : Array (Option Float)) : String :=
+  let finiteVals := vals.filterMap id
+  if finiteVals.size < 2 then "linear"
+  else
+    let maxAbs := finiteVals.foldl (init := 0.0) fun m z => max m z.abs
+    if maxAbs == 0.0 then "linear"
+    else
+      let zeroFloor := maxAbs * 1e-9
+      let sigAbs := (finiteVals.filterMap fun z =>
+        let a := z.abs
+        if a > zeroFloor then some a else none).qsort (fun a b => a < b)
+      if sigAbs.isEmpty then "linear"
+      else
+        let medSig := sigAbs[sigAbs.size / 2]!
+        if (maxAbs / max medSig 1e-6) ≥ 1000.0 then "symlog" else "linear"
+
+private def zRangeOfFinite (vals : Array Float) : Float × Float :=
+  if vals.isEmpty then (0.0, 1.0)
+  else
+    let first := vals[0]!
+    vals.foldl (init := (first, first)) fun (lo, hi) v => (min lo v, max hi v)
+
+private def evalSingleProbe (baseEnv : Env) (expr : Expr) (effN : Float)
+    (lbl : String) (bindings : List (String × FastLC)) : String × Option String × String :=
+  let vars' := bindings.foldl (init := baseEnv.vars) fun acc (k, v) => acc.insert k v
+  let pEnv := { baseEnv with vars := vars' }
+  match evalExpr pEnv expr with
+  | .ok (.num v, _) =>
+    let evalN := v.evalFinite effN
+    let evalNJson := jsonFloatOrNull evalN
+    let regime :=
+      if v.isZero then "zero"
+      else if v.isInfinite then "infinite"
+      else if v.isInfinitesimal then "infinitesimal"
+      else "finite"
+    let item :=
+      "{" ++
+      s!"\"x_label\":\"{escapeJsonStr lbl}\"," ++
+      "\"ok\":true," ++
+      s!"\"exact\":\"{escapeJsonStr v.pretty}\"," ++
+      s!"\"approx\":\"{escapeJsonStr v.prettyApprox}\"," ++
+      s!"\"regime\":\"{regime}\"," ++
+      s!"\"eval_finite\":{evalNJson}" ++
+      "}"
+    (lbl, some v.pretty, item)
+  | .ok (.bool b, _) =>
+    let bStr := if b then "true" else "false"
+    let item :=
+      "{" ++
+      s!"\"x_label\":\"{escapeJsonStr lbl}\"," ++
+      "\"ok\":true," ++
+      s!"\"exact\":\"{bStr}\"," ++
+      s!"\"approx\":\"{bStr}\"," ++
+      "\"regime\":\"bool\"," ++
+      "\"eval_finite\":null" ++
+      "}"
+    (lbl, some bStr, item)
+  | .error err =>
+    let item :=
+      "{" ++
+      s!"\"x_label\":\"{escapeJsonStr lbl}\"," ++
+      "\"ok\":false," ++
+      s!"\"error\":\"{escapeJsonStr err}\"" ++
+      "}"
+    (lbl, none, item)
+
 private def fnProbePoints : List (String × FastLC) :=
   [ ("-1", (-1 : FastLC))
   , ("-ε", -FastLC.infEps)
@@ -1008,52 +1144,29 @@ private def fnProbePoints : List (String × FastLC) :=
   , ("ε", FastLC.infEps)
   , ("1", (1 : FastLC)) ]
 
-private def evalFnToJson (input : String) (expr : Expr) (bigN : Float) (order : Nat) : String :=
+private def fn2ProbePoints : List (String × FastLC × FastLC) :=
+  [ ("(0,0)", (0 : FastLC), (0 : FastLC))
+  , ("(1,0)", (1 : FastLC), (0 : FastLC))
+  , ("(0,1)", (0 : FastLC), (1 : FastLC))
+  , ("(-1,-1)", (-1 : FastLC), (-1 : FastLC))
+  , ("(ε,0)", FastLC.infEps, (0 : FastLC))
+  , ("(0,ε)", (0 : FastLC), FastLC.infEps) ]
+
+private def fn3ProbePoints : List (String × FastLC × FastLC × FastLC) :=
+  [ ("(0,0,0)", (0 : FastLC), (0 : FastLC), (0 : FastLC))
+  , ("(1,0,0)", (1 : FastLC), (0 : FastLC), (0 : FastLC))
+  , ("(0,1,0)", (0 : FastLC), (1 : FastLC), (0 : FastLC))
+  , ("(0,0,1)", (0 : FastLC), (0 : FastLC), (1 : FastLC))
+  , ("(ε,0,0)", FastLC.infEps, (0 : FastLC), (0 : FastLC))
+  , ("(ε,ε,ε)", FastLC.infEps, FastLC.infEps, FastLC.infEps) ]
+
+private def evalFnToJson (input : String) (expr : Expr) (varName : String)
+    (bigN : Float) (order : Nat) : String :=
   let effN := if isFiniteFloat bigN && bigN > 0.0 then bigN else 100.0
   let baseEnv := defaultEnv order
   -- A. Exact Lean 4 FastLC probes at 6 key points
-  let probeRes : List (String × Option String × String) :=
-    fnProbePoints.map fun (lbl, xLC) =>
-      let pEnv := { baseEnv with vars := baseEnv.vars.insert "x" xLC }
-      match evalExpr pEnv expr with
-      | .ok (.num v, _) =>
-        let evalN := v.evalFinite effN
-        let evalNJson := if isFiniteFloat evalN then s!"{cleanFloat evalN}" else "null"
-        let regime :=
-          if v.isZero then "zero"
-          else if v.isInfinite then "infinite"
-          else if v.isInfinitesimal then "infinitesimal"
-          else "finite"
-        let item :=
-          "{" ++
-          s!"\"x_label\":\"{escapeJsonStr lbl}\"," ++
-          "\"ok\":true," ++
-          s!"\"exact\":\"{escapeJsonStr v.pretty}\"," ++
-          s!"\"approx\":\"{escapeJsonStr v.prettyApprox}\"," ++
-          s!"\"regime\":\"{regime}\"," ++
-          s!"\"eval_finite\":{evalNJson}" ++
-          "}"
-        (lbl, some v.pretty, item)
-      | .ok (.bool b, _) =>
-        let bStr := if b then "true" else "false"
-        let item :=
-          "{" ++
-          s!"\"x_label\":\"{escapeJsonStr lbl}\"," ++
-          "\"ok\":true," ++
-          s!"\"exact\":\"{bStr}\"," ++
-          s!"\"approx\":\"{bStr}\"," ++
-          "\"regime\":\"bool\"," ++
-          "\"eval_finite\":null" ++
-          "}"
-        (lbl, some bStr, item)
-      | .error err =>
-        let item :=
-          "{" ++
-          s!"\"x_label\":\"{escapeJsonStr lbl}\"," ++
-          "\"ok\":false," ++
-          s!"\"error\":\"{escapeJsonStr err}\"" ++
-          "}"
-        (lbl, none, item)
+  let probeRes := fnProbePoints.map fun (lbl, xLC) =>
+    evalSingleProbe baseEnv expr effN lbl [(varName, xLC)]
   let probesJson := "[" ++ String.intercalate "," (probeRes.map fun (_, _, j) => j) ++ "]"
   let preferred := ["-1", "0", "1"].filterMap fun target =>
     match probeRes.find? (fun (l, _, _) => l == target) with
@@ -1066,7 +1179,7 @@ private def evalFnToJson (input : String) (expr : Expr) (bigN : Float) (order : 
       let anyOk := probeRes.filterMap fun (l, exOpt, _) =>
         exOpt.map fun exStr => s!"f({l}) = {exStr}"
       let picked := anyOk.take 3
-      if picked.isEmpty then "f(x)" else String.intercalate ",  " picked
+      if picked.isEmpty then s!"f({varName})" else String.intercalate ",  " picked
   -- B. Macro plot points in [-1, 1] (101 uniform + 61 cluster in [-10/N, 10/N], sorted & deduped)
   let uniformXs : Array Float := (Array.range 101).map fun i =>
     -1.0 + 2.0 * (Float.ofNat i) / 100.0
@@ -1075,24 +1188,24 @@ private def evalFnToJson (input : String) (expr : Expr) (bigN : Float) (order : 
     -clusterSpan + 2.0 * clusterSpan * (Float.ofNat i) / 60.0
   let combinedXs := (uniformXs ++ clusterXs).qsort (fun a b => a < b)
   let macroXs := dedupSortedFloats combinedXs.toList
-  let macroPts : Array (Float × Float) := macroXs.foldl (init := #[]) fun acc x =>
-    match evalExprFloat expr effN x with
-    | some y => acc.push (x, y)
+  let macroPts : Array (Float × Float) := macroXs.foldl (init := #[]) fun acc t =>
+    match evalExprFloatVars expr effN [(varName, t)] with
+    | some y => acc.push (t, y)
     | none => acc
   let (yMin, yMax) := yBounds macroPts
   -- C. Micro transition-layer points in [-8/N, 8/N] (81 uniform)
   let zoomHalf := 8.0 / effN
   let zoomPts : Array (Float × Float) := (Array.range 81).foldl (init := #[]) fun acc i =>
-    let x := -zoomHalf + 2.0 * zoomHalf * (Float.ofNat i) / 80.0
-    match evalExprFloat expr effN x with
-    | some y => acc.push (x, y)
+    let t := -zoomHalf + 2.0 * zoomHalf * (Float.ofNat i) / 80.0
+    match evalExprFloatVars expr effN [(varName, t)] with
+    | some y => acc.push (t, y)
     | none => acc
   let (zyMin, zyMax) := yBounds zoomPts
   let anyProbeOk := probeRes.any fun (_, exOpt, _) => exOpt.isSome
   if !anyProbeOk && macroPts.isEmpty then
     -- All probes failed and Float sampler produced zero points (e.g. undefined variable `foo + x`)
     let firstErr :=
-      match evalExpr { baseEnv with vars := baseEnv.vars.insert "x" (0 : FastLC) } expr with
+      match evalExpr { baseEnv with vars := baseEnv.vars.insert varName (0 : FastLC) } expr with
       | .error e => e
       | .ok _ => "Unable to evaluate function expression"
     "{" ++
@@ -1100,27 +1213,222 @@ private def evalFnToJson (input : String) (expr : Expr) (bigN : Float) (order : 
     s!"\"input\":\"{escapeJsonStr input}\"," ++
     s!"\"error\":\"{escapeJsonStr firstErr}\"" ++
     "}"
+  else if macroPts.size < 2 then
+    let reason := s!"fewer than 2 finite samples for f({varName}) at H ↦ {formatCleanNum effN}"
+    "{" ++
+    "\"ok\":true," ++
+    "\"kind\":\"fn\"," ++
+    s!"\"var\":\"{escapeJsonStr varName}\"," ++
+    s!"\"input\":\"{escapeJsonStr input}\"," ++
+    s!"\"exact\":\"{escapeJsonStr exactSummary}\"," ++
+    s!"\"approx\":\"f({escapeJsonStr varName}) at H ↦ {formatCleanNum effN}\"," ++
+    "\"regime\":\"function\"," ++
+    s!"\"eval_N\":{formatCleanNum effN}," ++
+    "\"plot_decision\":\"skip_nonfinite\"," ++
+    s!"\"plot_reason\":\"{escapeJsonStr reason}\"," ++
+    "\"scale_hint\":\"linear\"," ++
+    s!"\"probes\":{probesJson}" ++
+    "}"
   else
-  "{" ++
-  "\"ok\":true," ++
-  "\"kind\":\"fn\"," ++
-  "\"var\":\"x\"," ++
-  s!"\"input\":\"{escapeJsonStr input}\"," ++
-  s!"\"exact\":\"{escapeJsonStr exactSummary}\"," ++
-  s!"\"approx\":\"f(x) at H ↦ {formatCleanNum effN}\"," ++
-  "\"regime\":\"function\"," ++
-  s!"\"eval_N\":{formatCleanNum effN}," ++
-  s!"\"probes\":{probesJson}," ++
-  "\"plot\":{" ++
-    "\"var\":\"x\"," ++
-    "\"x_min\":-1,\"x_max\":1," ++
-    s!"\"y_min\":{cleanFloat yMin},\"y_max\":{cleanFloat yMax}," ++
-    s!"\"points\":{formatPointsJson macroPts}," ++
-    s!"\"zoom_x_min\":{cleanFloat (-zoomHalf)},\"zoom_x_max\":{cleanFloat zoomHalf}," ++
-    s!"\"zoom_y_min\":{cleanFloat zyMin},\"zoom_y_max\":{cleanFloat zyMax}," ++
-    s!"\"zoom_points\":{formatPointsJson zoomPts}" ++
-  "}" ++
-  "}"
+    let sHint := scaleHintForMacro macroPts
+    "{" ++
+    "\"ok\":true," ++
+    "\"kind\":\"fn\"," ++
+    s!"\"var\":\"{escapeJsonStr varName}\"," ++
+    s!"\"input\":\"{escapeJsonStr input}\"," ++
+    s!"\"exact\":\"{escapeJsonStr exactSummary}\"," ++
+    s!"\"approx\":\"f({escapeJsonStr varName}) at H ↦ {formatCleanNum effN}\"," ++
+    "\"regime\":\"function\"," ++
+    s!"\"eval_N\":{formatCleanNum effN}," ++
+    "\"plot_decision\":\"plot\"," ++
+    s!"\"scale_hint\":\"{sHint}\"," ++
+    s!"\"probes\":{probesJson}," ++
+    "\"plot\":{" ++
+      s!"\"var\":\"{escapeJsonStr varName}\"," ++
+      s!"\"scale_hint\":\"{sHint}\"," ++
+      "\"x_min\":-1,\"x_max\":1," ++
+      s!"\"y_min\":{cleanFloat yMin},\"y_max\":{cleanFloat yMax}," ++
+      s!"\"points\":{formatPointsJson macroPts}," ++
+      s!"\"zoom_x_min\":{cleanFloat (-zoomHalf)},\"zoom_x_max\":{cleanFloat zoomHalf}," ++
+      s!"\"zoom_y_min\":{cleanFloat zyMin},\"zoom_y_max\":{cleanFloat zyMax}," ++
+      s!"\"zoom_points\":{formatPointsJson zoomPts}" ++
+    "}" ++
+    "}"
+
+private def evalFn2ToJson (input : String) (expr : Expr) (v1 v2 : String)
+    (bigN : Float) (order : Nat) : String :=
+  let effN := if isFiniteFloat bigN && bigN > 0.0 then bigN else 100.0
+  let baseEnv := defaultEnv order
+  let probeRes := fn2ProbePoints.map fun (lbl, aLC, bLC) =>
+    evalSingleProbe baseEnv expr effN lbl [(v1, aLC), (v2, bLC)]
+  let probesJson := "[" ++ String.intercalate "," (probeRes.map fun (_, _, j) => j) ++ "]"
+  let okProbes := probeRes.filterMap fun (l, exOpt, _) =>
+    exOpt.map fun exStr => s!"f{l} = {exStr}"
+  let exactSummary :=
+    let picked := okProbes.take 3
+    if picked.isEmpty then s!"f({v1},{v2})" else String.intercalate ",  " picked
+  -- 21x21 row-major grid: v2 outer (row 0 = -1 .. row 20 = +1), v1 inner (col 0 = -1 .. col 20 = +1)
+  let gridSize : Nat := 21
+  let coords : Array Float := (Array.range gridSize).map fun i =>
+    -1.0 + 2.0 * (Float.ofNat i) / (Float.ofNat (gridSize - 1))
+  let gridVals : Array (Option Float) := Id.run do
+    let mut out : Array (Option Float) := Array.mkEmpty (gridSize * gridSize)
+    for c2 in coords do
+      for c1 in coords do
+        out := out.push (evalExprFloatVars expr effN [(v1, c1), (v2, c2)])
+    return out
+  let finiteVals := gridVals.filterMap id
+  let anyProbeOk := probeRes.any fun (_, exOpt, _) => exOpt.isSome
+  if !anyProbeOk && finiteVals.isEmpty then
+    let firstErr :=
+      let vMap := baseEnv.vars.insert v1 (0 : FastLC) |>.insert v2 (0 : FastLC)
+      match evalExpr { baseEnv with vars := vMap } expr with
+      | .error e => e
+      | .ok _ => "Unable to evaluate 2-variable function expression"
+    "{" ++
+    "\"ok\":false," ++
+    s!"\"input\":\"{escapeJsonStr input}\"," ++
+    s!"\"error\":\"{escapeJsonStr firstErr}\"" ++
+    "}"
+  else
+    let varsJson := formatStringArrayJson [v1, v2]
+    let sHint := scaleHintForValues gridVals
+    if finiteVals.size < 2 then
+      let reason := s!"fewer than 2 finite grid samples for f({v1},{v2}) at H ↦ {formatCleanNum effN}"
+      "{" ++
+      "\"ok\":true," ++
+      "\"kind\":\"fn2\"," ++
+      s!"\"vars\":{varsJson}," ++
+      s!"\"input\":\"{escapeJsonStr input}\"," ++
+      s!"\"exact\":\"{escapeJsonStr exactSummary}\"," ++
+      s!"\"approx\":\"f({escapeJsonStr v1},{escapeJsonStr v2}) at H ↦ {formatCleanNum effN}\"," ++
+      "\"regime\":\"function\"," ++
+      s!"\"eval_N\":{formatCleanNum effN}," ++
+      "\"plot_decision\":\"skip_nonfinite\"," ++
+      s!"\"plot_reason\":\"{escapeJsonStr reason}\"," ++
+      s!"\"scale_hint\":\"{sHint}\"," ++
+      s!"\"probes\":{probesJson}" ++
+      "}"
+    else
+      let (zMin, zMax) := zRangeOfFinite finiteVals
+      "{" ++
+      "\"ok\":true," ++
+      "\"kind\":\"fn2\"," ++
+      s!"\"vars\":{varsJson}," ++
+      s!"\"input\":\"{escapeJsonStr input}\"," ++
+      s!"\"exact\":\"{escapeJsonStr exactSummary}\"," ++
+      s!"\"approx\":\"f({escapeJsonStr v1},{escapeJsonStr v2}) at H ↦ {formatCleanNum effN}\"," ++
+      "\"regime\":\"function\"," ++
+      s!"\"eval_N\":{formatCleanNum effN}," ++
+      "\"plot_decision\":\"plot\"," ++
+      s!"\"scale_hint\":\"{sHint}\"," ++
+      s!"\"grid_size\":{gridSize}," ++
+      "\"x_min\":-1,\"x_max\":1,\"y_min\":-1,\"y_max\":1," ++
+      s!"\"z_min\":{cleanFloat zMin},\"z_max\":{cleanFloat zMax}," ++
+      s!"\"values\":{formatOptFloatArrayJson gridVals}," ++
+      s!"\"probes\":{probesJson}" ++
+      "}"
+
+private def fn3SliceValues : Array Float :=
+  #[-1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0]
+
+private def evalFn3ToJson (input : String) (expr : Expr) (v1 v2 v3 : String)
+    (bigN : Float) (order : Nat) : String :=
+  let effN := if isFiniteFloat bigN && bigN > 0.0 then bigN else 100.0
+  let baseEnv := defaultEnv order
+  let probeRes := fn3ProbePoints.map fun (lbl, aLC, bLC, cLC) =>
+    evalSingleProbe baseEnv expr effN lbl [(v1, aLC), (v2, bLC), (v3, cLC)]
+  let probesJson := "[" ++ String.intercalate "," (probeRes.map fun (_, _, j) => j) ++ "]"
+  let okProbes := probeRes.filterMap fun (l, exOpt, _) =>
+    exOpt.map fun exStr => s!"f{l} = {exStr}"
+  let exactSummary :=
+    let picked := okProbes.take 3
+    if picked.isEmpty then s!"f({v1},{v2},{v3})" else String.intercalate ",  " picked
+  -- 9 z-slices, each a 13x13 row-major grid in (v1, v2)
+  let gridSize : Nat := 13
+  let coords : Array Float := (Array.range gridSize).map fun i =>
+    -1.0 + 2.0 * (Float.ofNat i) / (Float.ofNat (gridSize - 1))
+  let sliceGrids : Array (Array (Option Float)) := fn3SliceValues.map fun c3 => Id.run do
+    let mut out : Array (Option Float) := Array.mkEmpty (gridSize * gridSize)
+    for c2 in coords do
+      for c1 in coords do
+        out := out.push (evalExprFloatVars expr effN [(v1, c1), (v2, c2), (v3, c3)])
+    return out
+  let allVals : Array (Option Float) := sliceGrids.foldl (init := #[]) fun acc g => acc ++ g
+  let finiteVals := allVals.filterMap id
+  let anyProbeOk := probeRes.any fun (_, exOpt, _) => exOpt.isSome
+  if !anyProbeOk && finiteVals.isEmpty then
+    let firstErr :=
+      let vMap := baseEnv.vars.insert v1 (0 : FastLC)
+        |>.insert v2 (0 : FastLC)
+        |>.insert v3 (0 : FastLC)
+      match evalExpr { baseEnv with vars := vMap } expr with
+      | .error e => e
+      | .ok _ => "Unable to evaluate 3-variable function expression"
+    "{" ++
+    "\"ok\":false," ++
+    s!"\"input\":\"{escapeJsonStr input}\"," ++
+    s!"\"error\":\"{escapeJsonStr firstErr}\"" ++
+    "}"
+  else
+    let varsJson := formatStringArrayJson [v1, v2, v3]
+    let sHint := scaleHintForValues allVals
+    let sliceValsJson :=
+      "[" ++ String.intercalate "," (fn3SliceValues.toList.map formatCleanNum) ++ "]"
+    if finiteVals.size < 2 then
+      let reason := s!"fewer than 2 finite grid samples for f({v1},{v2},{v3}) at H ↦ {formatCleanNum effN}"
+      "{" ++
+      "\"ok\":true," ++
+      "\"kind\":\"fn3\"," ++
+      s!"\"vars\":{varsJson}," ++
+      s!"\"input\":\"{escapeJsonStr input}\"," ++
+      s!"\"exact\":\"{escapeJsonStr exactSummary}\"," ++
+      s!"\"approx\":\"f({escapeJsonStr v1},{escapeJsonStr v2},{escapeJsonStr v3}) at H ↦ {formatCleanNum effN}\"," ++
+      "\"regime\":\"function\"," ++
+      s!"\"eval_N\":{formatCleanNum effN}," ++
+      "\"plot_decision\":\"skip_nonfinite\"," ++
+      s!"\"plot_reason\":\"{escapeJsonStr reason}\"," ++
+      s!"\"scale_hint\":\"{sHint}\"," ++
+      s!"\"probes\":{probesJson}" ++
+      "}"
+    else
+      let (zMin, zMax) := zRangeOfFinite finiteVals
+      let slicesJson :=
+        "[" ++ String.intercalate "," (sliceGrids.toList.map formatOptFloatArrayJson) ++ "]"
+      "{" ++
+      "\"ok\":true," ++
+      "\"kind\":\"fn3\"," ++
+      s!"\"vars\":{varsJson}," ++
+      s!"\"input\":\"{escapeJsonStr input}\"," ++
+      s!"\"exact\":\"{escapeJsonStr exactSummary}\"," ++
+      s!"\"approx\":\"f({escapeJsonStr v1},{escapeJsonStr v2},{escapeJsonStr v3}) at H ↦ {formatCleanNum effN}\"," ++
+      "\"regime\":\"function\"," ++
+      s!"\"eval_N\":{formatCleanNum effN}," ++
+      "\"plot_decision\":\"plot\"," ++
+      s!"\"scale_hint\":\"{sHint}\"," ++
+      s!"\"grid_size\":{gridSize}," ++
+      "\"x_min\":-1,\"x_max\":1,\"y_min\":-1,\"y_max\":1," ++
+      s!"\"z_min\":{cleanFloat zMin},\"z_max\":{cleanFloat zMax}," ++
+      s!"\"slice_values\":{sliceValsJson}," ++
+      s!"\"slices\":{slicesJson}," ++
+      s!"\"probes\":{probesJson}" ++
+      "}"
+
+private def buildConstantScaleCurve (x : FastLC) (effN evalN : Float) : Array (Float × Float) :=
+  let nMax := max 10000.0 effN
+  let raw : Array (Float × Float) := (Array.range 25).foldl (init := #[]) fun acc i =>
+    let nVal :=
+      if i == 0 then 1.0
+      else if i == 24 then nMax
+      else Float.pow nMax ((Float.ofNat i) / 24.0)
+    let yVal := x.evalFinite nVal
+    if isFiniteFloat nVal && isFiniteFloat yVal then acc.push (nVal, yVal) else acc
+  if raw.size < 2 && isFiniteFloat effN && effN > 1.0 && isFiniteFloat evalN then
+    let hasEffN := raw.any fun (n, _) => (n - effN).abs ≤ 1e-9 * effN
+    if hasEffN then raw
+    else (raw.push (effN, evalN)).qsort (fun a b => a.1 < b.1)
+  else
+    raw
 
 /-- Evaluate an expression and serialize rich result metadata as JSON for the web app API. -/
 def evalToJson (input : String) (bigN : Float := 100.0) (order : Nat := 10) : String :=
@@ -1132,9 +1440,11 @@ def evalToJson (input : String) (bigN : Float := 100.0) (order : Nat := 10) : St
     s!"\"error\":\"{escapeJsonStr err}\"" ++
     "}"
   | .ok expr =>
-    if hasFreeVar expr "x" then
-      evalFnToJson input expr bigN order
-    else
+    match freePlotVars expr with
+    | [v] => evalFnToJson input expr v bigN order
+    | [v1, v2] => evalFn2ToJson input expr v1 v2 bigN order
+    | [v1, v2, v3] => evalFn3ToJson input expr v1 v2 v3 bigN order
+    | _ =>
       match evalExpr (defaultEnv order) expr with
       | .error err =>
         "{" ++
@@ -1177,6 +1487,27 @@ def evalToJson (input : String) (bigN : Float := 100.0) (order : Nat := 10) : St
           else if x.isInfinite then "infinite"
           else if x.isInfinitesimal then "infinitesimal"
           else "finite"
+        let plotSuffix :=
+          if isFiniteFloat evalN then
+            let scaleCurve := buildConstantScaleCurve x effN evalN
+            let sHint := scaleHintForCurve scaleCurve
+            let flatPts : Array (Float × Float) := #[(-1.0, evalN), (0.0, evalN), (1.0, evalN)]
+            let (pyMin, pyMax) :=
+              if scaleCurve.isEmpty then (evalN - 1.0, evalN + 1.0)
+              else yBounds scaleCurve
+            ",\"plot_decision\":\"finite_projection\"," ++
+            s!"\"scale_hint\":\"{sHint}\"," ++
+            "\"plot\":{" ++
+              s!"\"finite_y\":{cleanFloat evalN}," ++
+              "\"x_min\":-1,\"x_max\":1," ++
+              s!"\"y_min\":{cleanFloat pyMin},\"y_max\":{cleanFloat pyMax}," ++
+              s!"\"points\":{formatPointsJson flatPts}," ++
+              s!"\"scale_curve\":{formatPointsJson scaleCurve}," ++
+              s!"\"scale_hint\":\"{sHint}\"" ++
+            "}"
+          else
+            ",\"plot_decision\":\"skip_nonfinite\"," ++
+            "\"plot_reason\":\"finite projection overflows Float64 at H ↦ N\""
         "{" ++
         "\"ok\":true," ++
         "\"kind\":\"num\"," ++
@@ -1191,6 +1522,7 @@ def evalToJson (input : String) (bigN : Float := 100.0) (order : Nat := 10) : St
         s!"\"eval_N\":{cleanFloat effN}," ++
         s!"\"eval_finite\":{evalNJson}," ++
         "\"terms\":[" ++ String.intercalate "," termsJson ++ "]" ++
+        plotSuffix ++
         "}"
 
 end LeanInf.Calc

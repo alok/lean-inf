@@ -386,6 +386,134 @@ def runAllTests : Array TestResult := Id.run do
       (invLegacy == invFast) s!"legacy={invLegacy}, fast={invFast}")
   | .error err => r := r.push (check g6 "invOrder sparse check" false err)
 
+  -- Group 7: Generic Plotter (finite_projection, scale_hint, y/z single-var, fn2, fn3)
+  let g7 := "7. Generic Plotter (finite_projection, scale_hint, fn2, fn3)"
+  -- Constant finite projections & scale_curve
+  let h2Json := Calc.evalToJson "H^2" 100.0 10
+  r := r.push (check g7 "H^2 emits finite_projection + loglog + scale_curve"
+    ((h2Json.splitOn "\"kind\":\"num\"").length ≥ 2 &&
+     (h2Json.splitOn "\"plot_decision\":\"finite_projection\"").length ≥ 2 &&
+     (h2Json.splitOn "\"scale_hint\":\"loglog\"").length ≥ 2 &&
+     (h2Json.splitOn "\"finite_y\":10000").length ≥ 2 &&
+     (h2Json.splitOn "\"scale_curve\":[[1.000000,1.000000]").length ≥ 2 &&
+     (h2Json.splitOn "NaN").length == 1)
+    h2Json)
+  let c42Json := Calc.evalToJson "42" 100.0 10
+  r := r.push (check g7 "42 emits finite_projection + linear"
+    ((c42Json.splitOn "\"plot_decision\":\"finite_projection\"").length ≥ 2 &&
+     (c42Json.splitOn "\"scale_hint\":\"linear\"").length ≥ 2 &&
+     (c42Json.splitOn "\"finite_y\":42").length ≥ 2)
+    c42Json)
+  let negH2Json := Calc.evalToJson "-H^2" 100.0 10
+  r := r.push (check g7 "-H^2 emits finite_projection + symlog"
+    ((negH2Json.splitOn "\"plot_decision\":\"finite_projection\"").length ≥ 2 &&
+     (negH2Json.splitOn "\"scale_hint\":\"symlog\"").length ≥ 2 &&
+     (negH2Json.splitOn "\"finite_y\":-10000").length ≥ 2)
+    negH2Json)
+  let dstep0Json := Calc.evalToJson "dstep(0)" 100.0 10
+  r := r.push (check g7 "dstep(0) emits finite_projection + scale_curve"
+    ((dstep0Json.splitOn "\"kind\":\"num\"").length ≥ 2 &&
+     (dstep0Json.splitOn "\"plot_decision\":\"finite_projection\"").length ≥ 2 &&
+     (dstep0Json.splitOn "\"scale_curve\":[[").length ≥ 2)
+    dstep0Json)
+  let h1000Json := Calc.evalToJson "H^1000" 100.0 10
+  r := r.push (check g7 "H^1000 at N=100 emits skip_nonfinite + plot_reason and omits plot"
+    ((h1000Json.splitOn "\"kind\":\"num\"").length ≥ 2 &&
+     (h1000Json.splitOn "\"plot_decision\":\"skip_nonfinite\"").length ≥ 2 &&
+     (h1000Json.splitOn "\"plot_reason\":").length ≥ 2 &&
+     (h1000Json.splitOn "\"plot\":{").length == 1)
+    h1000Json)
+  -- Single-var generalization (`x`, `y`, `z`) & adaptive `scale_hint`
+  let sinYJson := Calc.evalToJson "sin(y) + eps" 100.0 10
+  r := r.push (check g7 "sin(y) + eps emits kind=\"fn\", var=\"y\", linear"
+    ((sinYJson.splitOn "\"kind\":\"fn\"").length ≥ 2 &&
+     (sinYJson.splitOn "\"var\":\"y\"").length ≥ 2 &&
+     (sinYJson.splitOn "\"plot_decision\":\"plot\"").length ≥ 2 &&
+     (sinYJson.splitOn "\"scale_hint\":\"linear\"").length ≥ 2)
+    sinYJson)
+  let stepZJson := Calc.evalToJson "1/(1+exp(-Hz))" 100.0 10
+  r := r.push (check g7 "1/(1+exp(-Hz)) emits kind=\"fn\", var=\"z\", linear, exact probes"
+    ((stepZJson.splitOn "\"kind\":\"fn\"").length ≥ 2 &&
+     (stepZJson.splitOn "\"var\":\"z\"").length ≥ 2 &&
+     (stepZJson.splitOn "\"plot_decision\":\"plot\"").length ≥ 2 &&
+     (stepZJson.splitOn "\"scale_hint\":\"linear\"").length ≥ 2 &&
+     (stepZJson.splitOn "\"exact\":\"f(-1) = 0,  f(0) = 1/2,  f(1) = 1\"").length ≥ 2)
+    stepZJson)
+  let stepXJson := Calc.evalToJson "1/(1+exp(-Hx))" 100.0 10
+  r := r.push (check g7 "1/(1+exp(-Hx)) keeps linear scale_hint and plot_decision=\"plot\""
+    ((stepXJson.splitOn "\"plot_decision\":\"plot\"").length ≥ 2 &&
+     (stepXJson.splitOn "\"scale_hint\":\"linear\"").length ≥ 2)
+    stepXJson)
+  let dstepXJson := Calc.evalToJson "dstep(x)" 100.0 10
+  r := r.push (check g7 "dstep(x) keeps linear scale_hint for sharp Dirac spike"
+    ((dstepXJson.splitOn "\"plot_decision\":\"plot\"").length ≥ 2 &&
+     (dstepXJson.splitOn "\"scale_hint\":\"linear\"").length ≥ 2)
+    dstepXJson)
+  let exp10xJson := Calc.evalToJson "exp(10*x)" 100.0 10
+  r := r.push (check g7 "exp(10*x) emits symlog scale_hint"
+    ((exp10xJson.splitOn "\"kind\":\"fn\"").length ≥ 2 &&
+     (exp10xJson.splitOn "\"scale_hint\":\"symlog\"").length ≥ 2)
+    exp10xJson)
+  let skipFnJson := Calc.evalToJson "H^1000 + x" 100.0 10
+  r := r.push (check g7 "H^1000 + x at N=100 keeps exact probes and emits skip_nonfinite"
+    ((skipFnJson.splitOn "\"ok\":true").length ≥ 2 &&
+     (skipFnJson.splitOn "\"kind\":\"fn\"").length ≥ 2 &&
+     (skipFnJson.splitOn "\"plot_decision\":\"skip_nonfinite\"").length ≥ 2 &&
+     (skipFnJson.splitOn "\"plot\":{").length == 1)
+    skipFnJson)
+  -- 2-var (`fn2`) heatmap & pole handling
+  let fn2Json := Calc.evalToJson "x^2 + y^2" 100.0 10
+  r := r.push (check g7 "x^2 + y^2 emits kind=\"fn2\", 21x21 grid, z_min=0, z_max=2, 6 probes"
+    ((fn2Json.splitOn "\"kind\":\"fn2\"").length ≥ 2 &&
+     (fn2Json.splitOn "\"vars\":[\"x\",\"y\"]").length ≥ 2 &&
+     (fn2Json.splitOn "\"grid_size\":21").length ≥ 2 &&
+     (fn2Json.splitOn "\"z_min\":0").length ≥ 2 &&
+     (fn2Json.splitOn "\"z_max\":2").length ≥ 2 &&
+     (fn2Json.splitOn "\"plot_decision\":\"plot\"").length ≥ 2 &&
+     (fn2Json.splitOn "\"x_label\":\"(0,0)\"").length ≥ 2 &&
+     (fn2Json.splitOn "\"x_label\":\"(0,ε)\"").length ≥ 2)
+    fn2Json)
+  let pole2Json := Calc.evalToJson "1/(x^2 + y^2)" 100.0 10
+  r := r.push (check g7 "1/(x^2 + y^2) emits null pole cleanly without NaN/inf"
+    ((pole2Json.splitOn "\"kind\":\"fn2\"").length ≥ 2 &&
+     (pole2Json.splitOn "\"plot_decision\":\"plot\"").length ≥ 2 &&
+     (pole2Json.splitOn ",null,").length ≥ 2 &&
+     (pole2Json.splitOn "NaN").length == 1 &&
+     (pole2Json.splitOn ",inf").length == 1 &&
+     (pole2Json.splitOn ":inf").length == 1 &&
+     (pole2Json.splitOn "-inf").length == 1)
+    pole2Json)
+  let xzJson := Calc.evalToJson "z + x" 100.0 10
+  r := r.push (check g7 "z + x canonicalizes vars to [\"x\",\"z\"]"
+    ((xzJson.splitOn "\"kind\":\"fn2\"").length ≥ 2 &&
+     (xzJson.splitOn "\"vars\":[\"x\",\"z\"]").length ≥ 2)
+    xzJson)
+  let gluedXYJson := Calc.evalToJson "xy + eps" 100.0 10
+  r := r.push (check g7 "glued xy + eps splits cleanly into kind=\"fn2\" vars [\"x\",\"y\"]"
+    ((gluedXYJson.splitOn "\"kind\":\"fn2\"").length ≥ 2 &&
+     (gluedXYJson.splitOn "\"vars\":[\"x\",\"y\"]").length ≥ 2 &&
+     (gluedXYJson.splitOn "\"x_label\":\"(1,0)\",\"ok\":true,\"exact\":\"ε\"").length ≥ 2)
+    gluedXYJson)
+  -- 3-var (`fn3`) slices
+  let fn3Json := Calc.evalToJson "x + y + z" 100.0 10
+  r := r.push (check g7 "x + y + z emits kind=\"fn3\", 13x13x9 slices, z_min=-3, z_max=3, 6 probes"
+    ((fn3Json.splitOn "\"kind\":\"fn3\"").length ≥ 2 &&
+     (fn3Json.splitOn "\"vars\":[\"x\",\"y\",\"z\"]").length ≥ 2 &&
+     (fn3Json.splitOn "\"grid_size\":13").length ≥ 2 &&
+     (fn3Json.splitOn "\"slice_values\":[-1,-0.750000,-0.500000,-0.250000,0,0.250000,0.500000,0.750000,1]").length ≥ 2 &&
+     (fn3Json.splitOn "\"z_min\":-3").length ≥ 2 &&
+     (fn3Json.splitOn "\"z_max\":3").length ≥ 2 &&
+     (fn3Json.splitOn "\"plot_decision\":\"plot\"").length ≥ 2 &&
+     (fn3Json.splitOn "\"x_label\":\"(0,0,0)\"").length ≥ 2 &&
+     (fn3Json.splitOn "\"x_label\":\"(ε,ε,ε)\"").length ≥ 2)
+    fn3Json)
+  -- Bound y/z remain scalar kind="num"
+  let boundYZJson := Calc.evalToJson "y = 3; z = 4; y + z" 100.0 10
+  r := r.push (check g7 "bound y and z stay scalar kind=\"num\" with exact=\"7\""
+    ((boundYZJson.splitOn "\"kind\":\"num\"").length ≥ 2 &&
+     (boundYZJson.splitOn "\"exact\":\"7\"").length ≥ 2)
+    boundYZJson)
+
   return r
 
 /-- Print a formatted test report and return `true` iff every test passed. -/
